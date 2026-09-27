@@ -1,0 +1,8 @@
+{
+  "name": "Quantiq Prime",
+  "description": "Quantiq Prime - Institutional Wealth Management, Automated Yield Trading, High-Tier Asset Portfolios, and Lipa Na M-PESA Integration. Trade Smart | Invest Wise | Grow Together.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
+
