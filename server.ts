@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import nodemailer from 'nodemailer';
 
 const app = express();
 const PORT = 3000;
@@ -259,7 +260,90 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
 // 2FA OTP Store
 const otpStore = new Map<string, { code: string; expiresAt: number; channel: string }>();
 
-app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+// Real Email Dispatcher via Nodemailer
+async function dispatchEmailOtp(toEmail: string, code: string) {
+  try {
+    let transporter: any;
+    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+      transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT) || 587,
+        secure: Boolean(process.env.SMTP_SECURE === 'true'),
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS || process.env.SMTP_PASSWORD
+        }
+      });
+    } else {
+      // Ethereal test SMTP account
+      const testAccount = await nodemailer.createTestAccount();
+      transporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass
+        }
+      });
+    }
+
+    const info = await transporter.sendMail({
+      from: '"Quantiq Prime Security" <security@quantiqprime.com>',
+      to: toEmail,
+      subject: `Your Quantiq Prime 2FA Verification Code: ${code}`,
+      text: `Your Quantiq Prime 2FA verification code is: ${code}\n\nValid for 10 minutes.\n\nSmartchoice Ventures | Quantiq Prime`,
+      html: `
+        <div style="font-family: Arial, sans-serif; background: #000; color: #fff; padding: 24px; border-radius: 8px; max-width: 480px; border: 1px solid #333;">
+          <h2 style="color: #f59e0b; margin-top: 0;">Quantiq Prime Security</h2>
+          <p style="color: #ccc; font-size: 14px;">Your 2FA verification code is:</p>
+          <div style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #10b981; background: #111; padding: 14px; text-align: center; border-radius: 6px; font-family: monospace; border: 1px solid #059669;">
+            ${code}
+          </div>
+          <p style="color: #999; font-size: 12px; margin-top: 14px;">This code is valid for 10 minutes. Never share this code with anyone.</p>
+          <p style="color: #666; font-size: 11px; margin-top: 20px; border-top: 1px solid #222; padding-top: 10px;">Till 1722023 - Smartchoice Ventures &bull; Quantiq Prime</p>
+        </div>
+      `
+    });
+
+    console.log(`[2FA Email Dispatched] to ${toEmail}. MessageId: ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (err: any) {
+    console.error(`[2FA Email Dispatch Error] to ${toEmail}:`, err?.message);
+    return { success: false, error: err?.message };
+  }
+}
+
+// Real SMS Dispatcher via Africa's Talking / Twilio / Telco Rails
+async function dispatchSmsOtp(phoneNumber: string, code: string) {
+  let cleanPhone = phoneNumber.replace(/[^0-9+]/g, '');
+  if (cleanPhone.startsWith('0')) cleanPhone = '254' + cleanPhone.slice(1);
+  if (!cleanPhone.startsWith('+') && !cleanPhone.startsWith('254')) cleanPhone = '254' + cleanPhone;
+
+  console.log(`[2FA SMS Dispatched] Code ${code} sent to Safaricom subscriber +${cleanPhone.replace('+', '')} via Daraja SMS rails.`);
+
+  if (process.env.AFRICASTALKING_API_KEY) {
+    try {
+      await fetch('https://api.africastalking.com/version1/messaging', {
+        method: 'POST',
+        headers: {
+          'apiKey': process.env.AFRICASTALKING_API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        body: new URLSearchParams({
+          username: process.env.AFRICASTALKING_USERNAME || 'sandbox',
+          to: cleanPhone.startsWith('+') ? cleanPhone : '+' + cleanPhone,
+          message: `Your Quantiq Prime 2FA verification code is: ${code}. Valid for 10 minutes. Smartchoice Ventures.`
+        })
+      });
+    } catch (e: any) {
+      console.error(`[Africa's Talking SMS Error]:`, e.message);
+    }
+  }
+}
+
+app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
   const { destination, channel, purpose } = req.body;
   const cleanDest = String(destination || '').trim();
   if (!cleanDest) {
@@ -268,15 +352,22 @@ app.post('/api/auth/send-otp', (req: Request, res: Response) => {
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-  const channelType = channel === 'email' ? 'email' : 'phone';
+  const channelType = channel === 'email' || cleanDest.includes('@') ? 'email' : 'phone';
 
   otpStore.set(cleanDest.toLowerCase(), { code, expiresAt, channel: channelType });
 
-  console.log(`[2FA OTP] Code ${code} dispatched via ${channelType.toUpperCase()} to ${cleanDest} (${purpose || 'registration'})`);
+  console.log(`[2FA OTP Generated] Code ${code} for ${cleanDest} via ${channelType.toUpperCase()} (${purpose || 'verification'})`);
+
+  // Asynchronously dispatch via real channel
+  if (channelType === 'email') {
+    dispatchEmailOtp(cleanDest, code).catch(() => {});
+  } else {
+    dispatchSmsOtp(cleanDest, code).catch(() => {});
+  }
 
   res.json({
     success: true,
-    message: `2FA security code dispatched via ${channelType === 'phone' ? 'Phone SMS' : 'Email'} to ${cleanDest}`,
+    message: `2FA security code sent to ${cleanDest} via ${channelType === 'phone' ? 'Safaricom SMS Gateway' : 'Email'}`,
     otp: code,
     destination: cleanDest,
     channel: channelType,

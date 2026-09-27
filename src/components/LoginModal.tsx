@@ -44,23 +44,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [sendCodeChannel, setSendCodeChannel] = useState<'phone' | 'email'>('phone');
   const [verificationCode, setVerificationCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
-  const [generatedCode, setGeneratedCode] = useState('');
   const [codeNotice, setCodeNotice] = useState('');
+  const [isSendingCode, setIsSendingCode] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSendCode = () => {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedCode(code);
-    setCodeSent(true);
-    setErrorMessage('');
+  const handleSendCode = async () => {
     const targetDest = identifier.trim() || (sendCodeChannel === 'phone' ? '+254 712 345 678' : 'investor@quantiqprime.com');
-    setCodeNotice(`2FA security code ${code} dispatched via ${sendCodeChannel === 'phone' ? 'Phone SMS' : 'Email'} to ${targetDest}`);
-  };
-
-  const autoFillCode = () => {
-    if (generatedCode) {
-      setVerificationCode(generatedCode);
+    setIsSendingCode(true);
+    setErrorMessage('');
+    try {
+      const res = await api.sendOtp(targetDest, sendCodeChannel, 'login');
+      setIsSendingCode(false);
+      setCodeSent(true);
+      setCodeNotice(`2FA security code dispatched to ${targetDest}. Please check your ${sendCodeChannel === 'phone' ? 'SMS' : 'Email'} and enter below.`);
+    } catch {
+      setIsSendingCode(false);
+      setErrorMessage('Could not connect to SMS/Email gateway. Please try again.');
     }
   };
 
@@ -78,19 +78,27 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
 
     if (!codeSent) {
-      handleSendCode();
+      await handleSendCode();
       setErrorMessage('2FA code dispatched! Please enter the 6-digit verification code below to sign in.');
       return;
     }
 
-    if (!verificationCode || verificationCode.trim() !== generatedCode) {
-      setErrorMessage('Invalid 6-digit 2FA verification code. Please check your SMS/Email notification.');
+    const cleanCode = verificationCode.trim();
+    if (!cleanCode || cleanCode.length < 6) {
+      setErrorMessage('Please enter the 6-digit 2FA verification code sent to your phone/email.');
       return;
     }
 
     setIsLoading(true);
 
     try {
+      const verifyRes = await api.verifyOtp(identifier.trim(), cleanCode);
+      if (!verifyRes.success) {
+        setIsLoading(false);
+        setErrorMessage(verifyRes.error || 'Invalid 6-digit 2FA code. Please check your SMS/Email notification.');
+        return;
+      }
+
       const res = await api.login(identifier, password);
       setIsLoading(false);
       setSuccessLogin(true);
@@ -303,18 +311,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               </button>
 
               {codeNotice && (
-                <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 truncate">
-                    {sendCodeChannel === 'phone' ? <Smartphone className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> : <Mail className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
-                    <span className="truncate">{codeNotice}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={autoFillCode}
-                    className="px-2 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[10px] rounded-lg shrink-0 cursor-pointer shadow"
-                  >
-                    Auto-Fill
-                  </button>
+                <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
+                  {sendCodeChannel === 'phone' ? <Smartphone className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> : <Mail className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                  <span className="truncate">{codeNotice}</span>
                 </div>
               )}
 

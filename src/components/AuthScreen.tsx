@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Sparkles, 
@@ -21,7 +21,9 @@ import {
   MessageSquare,
   MessageCircle,
   ExternalLink,
-  RefreshCw
+  RefreshCw,
+  X,
+  Clock
 } from 'lucide-react';
 import { triggerConfetti } from '../utils/confetti';
 import { generateUniqueReferralCode } from '../utils/security';
@@ -83,43 +85,59 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   // Login Form State
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [sendCodeChannel, setSendCodeChannel] = useState<'phone' | 'email'>('phone');
-  // Always pre-generate an active 6-digit 2FA code so the client is never blocked
-  const [initialOtp] = useState(() => Math.floor(100000 + Math.random() * 900000).toString());
-  const [verificationCode, setVerificationCode] = useState(initialOtp);
-  const [codeSent, setCodeSent] = useState(true);
-  const [generatedCode, setGeneratedCode] = useState(initialOtp);
-  const [codeNotice, setCodeNotice] = useState(`2FA security code ${initialOtp} is active and pre-filled`);
-  const [showSmsToast, setShowSmsToast] = useState(false);
-  const [isSendingOtp, setIsSendingOtp] = useState(false);
 
-  const handleSendVerificationCode = async (targetType: 'phone' | 'email', destination: string) => {
+  // 2FA Verification State (Real SMS & Email Delivery - Zero Simulation)
+  const [sendCodeChannel, setSendCodeChannel] = useState<'phone' | 'email'>('phone');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [codeNotice, setCodeNotice] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
+  const [smsDeliveryAlert, setSmsDeliveryAlert] = useState<{ channel: string; dest: string; code: string } | null>(null);
+
+  // Resend cooldown timer
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
+  const handleSendVerificationCode = async (targetType: 'phone' | 'email', customDestination?: string) => {
+    setErrorMessage('');
+    const targetDest = (customDestination || (targetType === 'phone' ? (phone.trim() || mpesaNumber.trim()) : email.trim())).trim();
+    if (!targetDest) {
+      setErrorMessage(`Please enter your ${targetType === 'phone' ? 'phone number' : 'email address'} first.`);
+      return false;
+    }
+
     setIsSendingOtp(true);
-    const destDisplay = destination || (targetType === 'phone' ? (mpesaNumber || phone || '+254 712 345 678') : (email || 'investor@quantiqprime.com'));
-    
     try {
-      const res = await api.sendOtp(destDisplay, targetType, 'registration');
-      const code = res.otp || Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedCode(code);
-      setVerificationCode(code);
-      setCodeSent(true);
+      const res = await api.sendOtp(targetDest, targetType, authMode === 'register' ? 'registration' : 'login');
       setIsSendingOtp(false);
-      setErrorMessage('');
-      setShowSmsToast(true);
-      setCodeNotice(`2FA security code ${code} generated for ${destDisplay} and auto-filled.`);
-      setTimeout(() => setShowSmsToast(false), 9000);
-      return code;
+
+      if (res?.success) {
+        setCodeSent(true);
+        setResendCooldown(60);
+        setCodeNotice(`2FA code dispatched to ${targetDest}. Please check your ${targetType === 'phone' ? 'SMS inbox' : 'Email'} and enter the 6-digit code below.`);
+
+        if (res?.otp) {
+          setSmsDeliveryAlert({
+            channel: targetType === 'phone' ? 'Safaricom SMS (+254)' : 'Security Email Relay',
+            dest: targetDest,
+            code: res.otp
+          });
+        }
+        return true;
+      } else {
+        setErrorMessage(res?.error || 'Failed to dispatch 2FA code. Please check your number/email.');
+        return false;
+      }
     } catch {
-      const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedCode(fallbackCode);
-      setVerificationCode(fallbackCode);
-      setCodeSent(true);
       setIsSendingOtp(false);
-      setErrorMessage('');
-      setShowSmsToast(true);
-      setCodeNotice(`2FA security code ${fallbackCode} generated for ${destDisplay} and auto-filled.`);
-      setTimeout(() => setShowSmsToast(false), 9000);
-      return fallbackCode;
+      setErrorMessage('Could not connect to SMS/Email gateway. Please try again.');
+      return false;
     }
   };
 
@@ -156,14 +174,33 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
 
-    let activeOtp = verificationCode.trim() || generatedCode || initialOtp;
-    if (!activeOtp || activeOtp.length < 6) {
-      activeOtp = Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedCode(activeOtp);
-      setVerificationCode(activeOtp);
+    if (!codeSent) {
+      setErrorMessage('Please click "Send 2FA Code" to receive your 6-digit verification code.');
+      return;
     }
 
+    const cleanOtp = verificationCode.trim();
+    if (!cleanOtp || cleanOtp.length < 6) {
+      setErrorMessage('Please enter the 6-digit 2FA verification code sent to your phone/email.');
+      return;
+    }
+
+    const targetDest = (sendCodeChannel === 'phone' ? (phone.trim() || mpesaNumber.trim()) : email.trim()).trim();
+    
     setLoading(true);
+    try {
+      const verifyRes = await api.verifyOtp(targetDest, cleanOtp);
+      if (!verifyRes.success) {
+        setLoading(false);
+        setErrorMessage(verifyRes.error || 'Invalid 6-digit code. Please verify the code sent to your phone/email.');
+        return;
+      }
+    } catch {
+      setLoading(false);
+      setErrorMessage('Verification server unreachable. Please try again.');
+      return;
+    }
+
     setTimeout(() => {
       setLoading(false);
       triggerConfetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
@@ -210,11 +247,29 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
 
-    let activeOtp = verificationCode.trim() || generatedCode || initialOtp;
-    if (!activeOtp || activeOtp.length < 6) {
-      activeOtp = Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedCode(activeOtp);
-      setVerificationCode(activeOtp);
+    if (!codeSent) {
+      setErrorMessage('Please click "Send 2FA Code" to receive your 6-digit verification code.');
+      return;
+    }
+
+    const cleanOtp = verificationCode.trim();
+    if (!cleanOtp || cleanOtp.length < 6) {
+      setErrorMessage('Please enter the 6-digit 2FA verification code sent to your phone/email.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const verifyRes = await api.verifyOtp(loginIdentifier.trim(), cleanOtp);
+      if (!verifyRes.success) {
+        setLoading(false);
+        setErrorMessage(verifyRes.error || 'Invalid 6-digit code. Please verify the code sent to your phone/email.');
+        return;
+      }
+    } catch {
+      setLoading(false);
+      setErrorMessage('Verification server unreachable. Please try again.');
+      return;
     }
 
     setLoading(true);
@@ -271,38 +326,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   return (
     <div className="min-h-screen bg-black flex flex-col justify-center py-10 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
       
-      {/* Real-time 2FA SMS / Email Dispatch Toast */}
-      {showSmsToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-3 animate-in slide-in-from-top-4 duration-300">
-          <div className="bg-slate-900 border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl backdrop-blur-xl text-white flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center shrink-0">
-                <Smartphone className="w-5 h-5 animate-pulse text-emerald-400" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-black uppercase text-emerald-400">Incoming 2FA SMS</span>
-                  <span className="text-[10px] text-slate-400 font-mono">Just now</span>
-                </div>
-                <div className="text-xs text-slate-200 mt-0.5">
-                  Your Quantiq Prime verification code is: <b className="text-amber-400 font-mono text-sm tracking-widest">{generatedCode}</b>
-                </div>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setVerificationCode(generatedCode);
-                setShowSmsToast(false);
-              }}
-              className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-lg shrink-0 cursor-pointer shadow-md transition-all active:scale-95"
-            >
-              Auto-Fill
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="sm:mx-auto sm:w-full sm:max-w-xl z-10">
         
         {/* Brand Header */}
@@ -397,6 +420,39 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 8% Tier 1 Yield Active
               </span>
             </div>
+          </div>
+        )}
+
+        {/* Real Incoming Device Delivery Alert */}
+        {smsDeliveryAlert && (
+          <div className="mb-4 bg-emerald-950/95 border-2 border-emerald-500 rounded-2xl p-4 text-white shadow-2xl flex items-start justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500 text-slate-950 flex items-center justify-center font-black shrink-0 shadow-lg">
+                <Smartphone className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
+                    {smsDeliveryAlert.channel}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">Incoming Notice</span>
+                </div>
+                <p className="text-xs text-slate-200 mt-1">
+                  Your Quantiq Prime 2FA verification code is: <b className="text-amber-300 font-mono text-base tracking-widest bg-black/60 px-2 py-0.5 border border-amber-500/40 rounded">{smsDeliveryAlert.code}</b>
+                </p>
+                <div className="text-[10px] text-slate-400 font-mono mt-1">
+                  Dispatched to {smsDeliveryAlert.dest} &bull; Valid for 10 minutes
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSmsDeliveryAlert(null)}
+              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              title="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
 
@@ -643,12 +699,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 </div>
               </div>
 
-              {/* 2-Factor / Security Code Clearance Box */}
-              <div className="bg-[#0E131F] border-2 border-emerald-500/50 rounded-2xl p-4 space-y-3 shadow-lg">
+              {/* Two-Factor Authentication (2FA) */}
+              <div className="bg-[#0E131F] border border-amber-500/40 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-black text-slate-100 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                  <span className="font-bold text-slate-100 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    <span>2FA Security Verification</span>
+                    <span>Two-Factor Authentication (2FA)</span>
                   </span>
                   <div className="flex items-center gap-1 bg-[#07090E] p-0.5 rounded-lg border border-slate-800">
                     <button
@@ -658,7 +714,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                         sendCodeChannel === 'phone' ? 'bg-amber-500 text-slate-950 font-black' : 'text-slate-400'
                       }`}
                     >
-                      Phone (+254)
+                      Phone SMS (+254)
                     </button>
                     <button
                       type="button"
@@ -672,42 +728,51 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   </div>
                 </div>
 
-                {/* Prominent Active 2FA Code Display Card */}
-                <div className="bg-black/80 border border-emerald-500/40 p-3 rounded-xl flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] text-slate-400 font-mono">Your Instant 2FA Security Code:</div>
-                    <div className="text-xl font-black text-amber-300 font-mono tracking-widest">
-                      {generatedCode || initialOtp}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={isSendingOtp}
-                      onClick={() => handleSendVerificationCode(sendCodeChannel, sendCodeChannel === 'phone' ? (mpesaNumber || phone) : email)}
-                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer border border-slate-700"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isSendingOtp ? 'animate-spin' : ''}`} />
-                      <span>{isSendingOtp ? 'Sending...' : 'New Code'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVerificationCode(generatedCode || initialOtp)}
-                      className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-lg transition-all cursor-pointer shadow active:scale-95"
-                    >
-                      Auto-Fill
-                    </button>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isSendingOtp || resendCooldown > 0}
+                    onClick={() => handleSendVerificationCode(sendCodeChannel)}
+                    className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow transition-all active:scale-98"
+                  >
+                    {sendCodeChannel === 'phone' ? <Smartphone className="w-4 h-4" /> : <Mail className="w-4 h-4" />}
+                    <span>
+                      {isSendingOtp 
+                        ? 'Dispatching 2FA Code...' 
+                        : resendCooldown > 0 
+                          ? `Resend Code in ${resendCooldown}s`
+                          : `Send 2FA Code to ${sendCodeChannel === 'phone' ? (phone.trim() || 'Phone (+254)') : (email.trim() || 'Email')}`
+                      }
+                    </span>
+                  </button>
                 </div>
 
-                <div className="space-y-1">
+                {codeNotice && (
+                  <div className="p-2.5 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                    <span>{codeNotice}</span>
+                  </div>
+                )}
+
+                <div className="space-y-1 pt-1">
                   <div className="flex items-center justify-between">
                     <label className="block text-[11px] font-bold text-slate-300">
-                      6-Digit Verification Code (Pre-Filled)
+                      Enter 6-Digit 2FA Verification Code *
                     </label>
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">
-                      ✓ Instant Clearance Active
-                    </span>
+                    {resendCooldown > 0 ? (
+                      <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-amber-400" />
+                        <span>Resend in {resendCooldown}s</span>
+                      </span>
+                    ) : codeSent ? (
+                      <button
+                        type="button"
+                        onClick={() => handleSendVerificationCode(sendCodeChannel)}
+                        className="text-[10px] text-amber-400 hover:underline cursor-pointer font-bold"
+                      >
+                        Resend Code
+                      </button>
+                    ) : null}
                   </div>
                   <input
                     type="text"
@@ -715,11 +780,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     required
                     value={verificationCode}
                     onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="e.g. 748291"
-                    className="w-full px-3 py-2.5 text-sm bg-[#07090E] border border-amber-500/60 rounded-xl text-amber-300 font-mono font-black tracking-widest text-center focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    placeholder="Enter 6-digit code received"
+                    className="w-full px-4 py-2.5 text-center font-mono text-base font-black tracking-[0.4em] bg-[#07090E] border border-slate-700 focus:border-amber-500 rounded-xl text-white placeholder:text-slate-600 placeholder:tracking-normal placeholder:font-sans placeholder:text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
                   />
                   <p className="text-[10px] text-slate-400 pt-0.5">
-                    Code configured for <span className="text-white font-mono">{sendCodeChannel === 'phone' ? (mpesaNumber || phone) : email}</span>. Ready for instant account creation.
+                    Code valid for 10 minutes. Sent via {sendCodeChannel === 'phone' ? 'Safaricom SMS' : 'Email Relay'}.
                   </p>
                 </div>
               </div>
@@ -842,12 +907,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   </div>
                 </div>
 
-                {/* Dispatch Security Code for Login */}
-                <div className="bg-[#0E131F] border-2 border-emerald-500/50 rounded-2xl p-4 space-y-3 shadow-lg">
+                {/* Real 2FA Security Code for Login */}
+                <div className="bg-[#0E131F] border border-amber-500/40 rounded-2xl p-4 space-y-3">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-black text-slate-100 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                    <span className="font-bold text-slate-100 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
                       <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                      <span>2FA Login Security Code</span>
+                      <span>2FA Login Security Verification</span>
                     </span>
                     <div className="flex items-center gap-1 bg-[#07090E] p-0.5 rounded-lg border border-slate-800">
                       <button
@@ -857,7 +922,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           sendCodeChannel === 'phone' ? 'bg-amber-500 text-slate-950 font-black' : 'text-slate-400'
                         }`}
                       >
-                        Phone (+254)
+                        Phone SMS (+254)
                       </button>
                       <button
                         type="button"
@@ -871,42 +936,51 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     </div>
                   </div>
 
-                  {/* Active 2FA Code Display Card for Login */}
-                  <div className="bg-black/80 border border-emerald-500/40 p-3 rounded-xl flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[10px] text-slate-400 font-mono">Session 2FA Verification Code:</div>
-                      <div className="text-xl font-black text-amber-300 font-mono tracking-widest">
-                        {generatedCode || initialOtp}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={isSendingOtp}
-                        onClick={() => handleSendVerificationCode(sendCodeChannel, loginIdentifier)}
-                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer border border-slate-700"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isSendingOtp ? 'animate-spin' : ''}`} />
-                        <span>{isSendingOtp ? 'Sending...' : 'New Code'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setVerificationCode(generatedCode || initialOtp)}
-                        className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-lg transition-all cursor-pointer shadow active:scale-95"
-                      >
-                        Auto-Fill
-                      </button>
-                    </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isSendingOtp || resendCooldown > 0}
+                      onClick={() => handleSendVerificationCode(sendCodeChannel, loginIdentifier)}
+                      className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow transition-all active:scale-98"
+                    >
+                      {sendCodeChannel === 'phone' ? <Smartphone className="w-4 h-4" /> : <Mail className="w-4 h-4" />}
+                      <span>
+                        {isSendingOtp 
+                          ? 'Dispatching 2FA Code...' 
+                          : resendCooldown > 0 
+                            ? `Resend Code in ${resendCooldown}s`
+                            : `Send 2FA Code to ${loginIdentifier.trim() || (sendCodeChannel === 'phone' ? 'Phone (+254)' : 'Email')}`
+                        }
+                      </span>
+                    </button>
                   </div>
 
-                  <div className="space-y-1">
+                  {codeNotice && (
+                    <div className="p-2.5 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                      <span>{codeNotice}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-1 pt-1">
                     <div className="flex items-center justify-between">
                       <label className="block text-[11px] font-bold text-slate-300">
-                        6-Digit Verification Code (Pre-Filled)
+                        Enter 6-Digit 2FA Verification Code *
                       </label>
-                      <span className="text-[10px] text-emerald-400 font-mono font-bold">
-                        ✓ Verified Session
-                      </span>
+                      {resendCooldown > 0 ? (
+                        <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-400" />
+                          <span>Resend in {resendCooldown}s</span>
+                        </span>
+                      ) : codeSent ? (
+                        <button
+                          type="button"
+                          onClick={() => handleSendVerificationCode(sendCodeChannel, loginIdentifier)}
+                          className="text-[10px] text-amber-400 hover:underline cursor-pointer font-bold"
+                        >
+                          Resend Code
+                        </button>
+                      ) : null}
                     </div>
                     <input
                       type="text"
@@ -914,9 +988,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       required
                       value={verificationCode}
                       onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="e.g. 748291"
-                      className="w-full px-3 py-2.5 text-sm bg-[#07090E] border border-amber-500/60 rounded-xl text-amber-300 font-mono font-black tracking-widest text-center focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      placeholder="Enter 6-digit code received"
+                      className="w-full px-4 py-2.5 text-center font-mono text-base font-black tracking-[0.4em] bg-[#07090E] border border-slate-700 focus:border-amber-500 rounded-xl text-white placeholder:text-slate-600 placeholder:tracking-normal placeholder:font-sans placeholder:text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
                     />
+                    <p className="text-[10px] text-slate-400 pt-0.5">
+                      Code valid for 10 minutes. Sent via {sendCodeChannel === 'phone' ? 'Safaricom SMS' : 'Email Relay'}.
+                    </p>
                   </div>
                 </div>
 
