@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# PHP Crypto Gateway Secrets (GitHub-Safe)
+php/.env*
+!php/.env.example
+php/config.php
+!php/config.example.php

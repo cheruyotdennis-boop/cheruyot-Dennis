@@ -1,0 +1,17 @@
+# ==============================================================================
+# Quantiq Prime PHP Crypto Deposit - Git Exclusion Rules (GitHub-Safe)
+# ==============================================================================
+
+# Ignore local environment files containing real production keys
+.env
+.env.*
+!.env.example
+
+# Ignore active configuration with local credentials
+config.php
+
+# Ignore logs, dumps and caches
+*.log
+*.sql.gz
+error_log
+.DS_Store
