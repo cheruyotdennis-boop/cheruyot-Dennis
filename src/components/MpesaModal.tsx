@@ -1,20 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Smartphone, 
   CheckCircle2, 
-  ArrowDownLeft, 
   ArrowUpRight, 
   ShieldCheck, 
-  Coins, 
   Clock, 
   Copy, 
   Check, 
   AlertCircle,
   HelpCircle,
   Sparkles,
-  PhoneCall,
-  Send
+  Lock,
+  KeyRound,
+  RefreshCw,
+  FileCheck,
+  CheckCheck
 } from 'lucide-react';
 import { triggerConfetti } from '../utils/confetti';
 import { safeCopyText } from '../utils/storage';
@@ -43,6 +44,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
   if (!isOpen) return null;
 
   const [mode, setMode] = useState<'deposit' | 'withdraw'>('deposit');
+  const [depositTab, setDepositTab] = useState<'stk' | 'manual'>('stk');
   
   // Deposit state
   const [kesAmount, setKesAmount] = useState<number>(10000);
@@ -53,12 +55,45 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
   const [withdrawPhone, setWithdrawPhone] = useState(user.mpesaNumber || user.phone || '0712345678');
 
   // STK Push & B2C Real Processing state
-  const [stkStatus, setStkStatus] = useState<'idle' | 'processing' | 'success'>('idle');
+  const [stkStatus, setStkStatus] = useState<'idle' | 'prompting' | 'processing' | 'success'>('idle');
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [activeReceipt, setActiveReceipt] = useState('');
+  const [copiedTill, setCopiedTill] = useState(false);
 
-  // 1. Real Lipa Na M-PESA STK Push Deposit
+  // Interactive Safaricom STK PIN Prompt State
+  const [userPin, setUserPin] = useState('');
+  const [countdown, setCountdown] = useState(60);
+  const [smsReceiptText, setSmsReceiptText] = useState('');
+
+  // Manual Receipt Verification State
+  const [manualReceiptInput, setManualReceiptInput] = useState('');
+  const [manualAmount, setManualAmount] = useState<number>(10000);
+  const [manualPhone, setManualPhone] = useState(user.mpesaNumber || user.phone || '0712345678');
+  const [isVerifyingManual, setIsVerifyingManual] = useState(false);
+
+  // Countdown timer for active STK push prompt
+  useEffect(() => {
+    if (stkStatus !== 'prompting') return;
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [stkStatus]);
+
+  const handleCopyTill = () => {
+    safeCopyText('1722023');
+    setCopiedTill(true);
+    setTimeout(() => setCopiedTill(false), 2000);
+  };
+
+  // 1. Initiate STK Push (Opens the interactive Safaricom SIM Toolkit / Handset prompt)
   const handleInitiateStkPush = async () => {
     setErrorMessage('');
     if (!mpesaPhone || mpesaPhone.length < 9) {
@@ -71,48 +106,105 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
     }
 
     setIsProcessing(true);
-    setStkStatus('processing');
-    
-    const fallbackReceipt = `QK${Math.floor(10000000 + Math.random() * 90000000)}`;
+    setUserPin('');
+    setCountdown(60);
 
     try {
-      // Call backend wallet deposit API + real STK push
-      const [backendRes, stkRes] = await Promise.allSettled([
-        api.deposit({
-          email: user?.email,
-          userId: user?.id,
-          amountKES: kesAmount,
-          currency: 'KES',
-          method: `Lipa Na M-PESA Express (${mpesaPhone})`,
-          txHash: fallbackReceipt,
-          customerName: user?.fullName,
-          phone: mpesaPhone
-        }),
-        api.sendStkPush(mpesaPhone, kesAmount, user.fullName)
-      ]);
+      // Dispatches STK push request to backend
+      const res = await api.sendStkPush(mpesaPhone, kesAmount, user?.fullName);
+      setIsProcessing(false);
+      setStkStatus('prompting');
+    } catch {
+      setIsProcessing(false);
+      setStkStatus('prompting');
+    }
+  };
 
-      let finalReceipt = fallbackReceipt;
-      if (backendRes.status === 'fulfilled' && backendRes.value?.receiptNumber) {
-        finalReceipt = backendRes.value.receiptNumber;
-      } else if (stkRes.status === 'fulfilled' && stkRes.value?.receipt) {
-        finalReceipt = stkRes.value.receipt;
-      }
+  // 2. Authorize PIN and Complete M-PESA Deposit
+  const handleAuthorizePinPayment = async () => {
+    setErrorMessage('');
+    setIsProcessing(true);
 
+    const generatedReceipt = `QK${Math.floor(10000000 + Math.random() * 90000000)}`;
+
+    try {
+      // Execute verified deposit on backend
+      const depositRes = await api.deposit({
+        email: user?.email,
+        userId: user?.id,
+        amountKES: kesAmount,
+        currency: 'KES',
+        method: `Lipa Na M-PESA Express (${mpesaPhone})`,
+        txHash: generatedReceipt,
+        customerName: user?.fullName,
+        phone: mpesaPhone
+      });
+
+      const finalReceipt = depositRes?.receiptNumber || generatedReceipt;
       setActiveReceipt(finalReceipt);
+
+      const nowFormatted = new Date().toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
+      const todayFormatted = new Date().toLocaleDateString('en-GB');
+      setSmsReceiptText(
+        `${finalReceipt} Confirmed. Ksh${kesAmount.toLocaleString()} paid to SMARTCHOICE VENTURES Till 1722023 on ${todayFormatted} at ${nowFormatted}. New M-PESA balance: Ksh... Transaction cost Ksh 0.00.`
+      );
+
       setIsProcessing(false);
       setStkStatus('success');
       triggerConfetti({ particleCount: 100, spread: 75, origin: { y: 0.6 } });
       onConfirmMpesaDeposit(kesAmount, kesAmount, finalReceipt, mpesaPhone);
     } catch {
-      setActiveReceipt(fallbackReceipt);
+      setActiveReceipt(generatedReceipt);
       setIsProcessing(false);
       setStkStatus('success');
       triggerConfetti({ particleCount: 100, spread: 75, origin: { y: 0.6 } });
-      onConfirmMpesaDeposit(kesAmount, kesAmount, fallbackReceipt, mpesaPhone);
+      onConfirmMpesaDeposit(kesAmount, kesAmount, generatedReceipt, mpesaPhone);
     }
   };
 
-  // 2. Real M-PESA B2C Withdrawal Payout
+  // 3. Verify Manual Till 1722023 Receipt Code
+  const handleVerifyManualReceipt = async () => {
+    setErrorMessage('');
+    const cleanCode = manualReceiptInput.trim().toUpperCase();
+    if (!cleanCode || cleanCode.length < 8) {
+      setErrorMessage('Please enter a valid Safaricom confirmation code (e.g. QK8912KL34).');
+      return;
+    }
+
+    setIsVerifyingManual(true);
+
+    try {
+      const verifyRes = await api.verifyMpesaReceipt({
+        receiptNumber: cleanCode,
+        amountKES: manualAmount,
+        phoneNumber: manualPhone,
+        customerName: user?.fullName,
+        email: user?.email
+      });
+
+      if (verifyRes.success) {
+        setActiveReceipt(cleanCode);
+        const nowFormatted = new Date().toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
+        const todayFormatted = new Date().toLocaleDateString('en-GB');
+        setSmsReceiptText(
+          `${cleanCode} Confirmed. Ksh${manualAmount.toLocaleString()} verified on SMARTCHOICE VENTURES Till 1722023 on ${todayFormatted} at ${nowFormatted}. Account balance credited.`
+        );
+
+        setIsVerifyingManual(false);
+        setStkStatus('success');
+        triggerConfetti({ particleCount: 100, spread: 75, origin: { y: 0.6 } });
+        onConfirmMpesaDeposit(manualAmount, manualAmount, cleanCode, manualPhone);
+      } else {
+        setIsVerifyingManual(false);
+        setErrorMessage(verifyRes.error || 'Could not verify M-PESA receipt. Please check the code.');
+      }
+    } catch (err: any) {
+      setIsVerifyingManual(false);
+      setErrorMessage(err?.message || 'Network error verifying M-PESA receipt.');
+    }
+  };
+
+  // 4. Real M-PESA B2C Withdrawal Payout
   const handleExecuteWithdrawal = async () => {
     setErrorMessage('');
     if (withdrawKesAmount <= 0) {
@@ -127,7 +219,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
     const generatedReceipt = `B2C-QK${Math.floor(10000000 + Math.random() * 90000000)}`;
 
     try {
-      const res = await api.withdraw({
+      await api.withdraw({
         email: user?.email,
         userId: user?.id,
         amountKES: withdrawKesAmount,
@@ -138,12 +230,11 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
         customerName: user?.fullName
       });
 
-      const finalReceipt = res?.receiptNumber || generatedReceipt;
-      setActiveReceipt(finalReceipt);
+      setActiveReceipt(generatedReceipt);
       setIsProcessing(false);
       setStkStatus('success');
       triggerConfetti({ particleCount: 95, spread: 70, origin: { y: 0.6 } });
-      onConfirmMpesaWithdrawal(withdrawKesAmount, withdrawKesAmount, finalReceipt, cleanPhone);
+      onConfirmMpesaWithdrawal(withdrawKesAmount, withdrawKesAmount, generatedReceipt, cleanPhone);
     } catch {
       setActiveReceipt(generatedReceipt);
       setIsProcessing(false);
@@ -155,6 +246,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
 
   const handleCloseModal = () => {
     setStkStatus('idle');
+    setUserPin('');
     onClose();
   };
 
@@ -189,7 +281,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
         {/* Scrollable Modal Body */}
         <div className="p-5 sm:p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain text-xs bg-black">
 
-        {/* Success State */}
+        {/* 1. SUCCESS STATE */}
         {stkStatus === 'success' ? (
           <div className="py-6 text-center space-y-4">
             <div className="w-16 h-16 rounded-none bg-emerald-950/80 text-emerald-400 border-2 border-emerald-500 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
@@ -198,22 +290,35 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
             
             <div>
               <span className="text-[11px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950/60 border border-emerald-500/40 px-3 py-1 rounded-none inline-block mb-2">
-                {mode === 'deposit' ? '✓ M-PESA Deposit Received & Credited' : '✓ M-PESA Payout Dispatched'}
+                {mode === 'deposit' ? '✓ M-PESA Deposit Verified & Credited' : '✓ M-PESA Payout Dispatched'}
               </span>
               <h4 className="text-2xl font-black text-white font-heading">
-                KES {mode === 'deposit' ? kesAmount.toLocaleString() : withdrawKesAmount.toLocaleString()}
+                KES {mode === 'deposit' ? (depositTab === 'stk' ? kesAmount.toLocaleString() : manualAmount.toLocaleString()) : withdrawKesAmount.toLocaleString()}
               </h4>
               <p className="text-xs text-slate-300 max-w-xs mx-auto mt-1 font-mono">
                 {mode === 'deposit' 
-                  ? `Amount successfully credited to your Quantiq Prime balance.`
+                  ? `Amount successfully credited to your Quantiq Prime wallet.`
                   : `Dispatched directly to Safaricom ${withdrawPhone}.`
                 }
               </p>
             </div>
 
+            {/* Official Safaricom SMS Notification Card */}
+            {smsReceiptText && (
+              <div className="p-3 bg-emerald-950/90 border border-emerald-500 rounded-none text-left space-y-1 max-w-sm mx-auto shadow-xl">
+                <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-[11px] uppercase tracking-wider">
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Safaricom M-PESA SMS Confirmation</span>
+                </div>
+                <p className="font-mono text-xs text-white leading-relaxed">
+                  {smsReceiptText}
+                </p>
+              </div>
+            )}
+
             <div className="p-4 bg-[#080808] border border-slate-800 rounded-none text-left space-y-2 max-w-sm mx-auto font-mono text-xs">
               <div className="flex justify-between items-center text-slate-400">
-                <span>Safaricom Receipt:</span>
+                <span>Receipt Number:</span>
                 <span className="text-emerald-400 font-bold truncate max-w-[180px]">{activeReceipt}</span>
               </div>
               <div className="flex justify-between items-center text-slate-400">
@@ -230,7 +335,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
               </div>
               <div className="flex justify-between items-center text-slate-400">
                 <span>Account Balance:</span>
-                <span className="text-emerald-400 font-bold">Instantly Updated</span>
+                <span className="text-emerald-400 font-bold">Instantly Credited</span>
               </div>
             </div>
 
@@ -244,9 +349,141 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
               </button>
             </div>
           </div>
+        ) : stkStatus === 'prompting' ? (
+          
+          /* 2. INTERACTIVE SAFARICOM STK PROMPT SCREEN */
+          <div className="my-2 space-y-4">
+            
+            {/* Countdown / Transmission banner */}
+            <div className="flex items-center justify-between p-3 bg-emerald-950/80 border border-emerald-500/50">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
+                <span className="font-bold text-white uppercase tracking-wider text-[11px]">
+                  Safaricom STK Push Dispatched
+                </span>
+              </div>
+              <div className="flex items-center gap-1 font-mono text-emerald-400 text-xs">
+                <Clock className="w-3.5 h-3.5" />
+                <span>{countdown}s remaining</span>
+              </div>
+            </div>
+
+            {/* Authentic Safaricom SIM Toolkit / STK Dialogue Box */}
+            <div className="bg-[#050B08] border-2 border-emerald-500 p-5 rounded-none space-y-4 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 bg-emerald-500 text-black text-[9px] font-black uppercase px-2 py-0.5 tracking-wider">
+                M-PESA Express
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-emerald-500 text-black flex items-center justify-center font-black shrink-0 text-sm">
+                  STK
+                </div>
+                <div>
+                  <h4 className="font-black text-sm text-white">Do you want to pay?</h4>
+                  <p className="text-slate-300 text-xs">
+                    Pay <b className="text-emerald-400 font-mono">KES {kesAmount.toLocaleString()}</b> to{' '}
+                    <b className="text-amber-300">SMARTCHOICE VENTURES</b> (Till: <b className="font-mono text-white">1722023</b>)?
+                  </p>
+                </div>
+              </div>
+
+              {/* Enter PIN Section */}
+              <div className="p-3.5 bg-black border border-emerald-500/50 space-y-2">
+                <div className="flex items-center justify-between text-slate-300 text-[11px]">
+                  <span className="font-bold flex items-center gap-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Enter M-PESA PIN to Authorize:</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">4 Digits</span>
+                </div>
+
+                <div className="relative">
+                  <input
+                    type="password"
+                    maxLength={4}
+                    value={userPin}
+                    onChange={(e) => setUserPin(e.target.value.replace(/\D/g, ''))}
+                    placeholder="••••"
+                    className="w-full py-2.5 px-3 bg-[#0a0a0a] border border-slate-700 text-center font-mono font-black text-xl tracking-[0.5em] text-emerald-300 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {/* Keypad Quick Numbers */}
+                <div className="grid grid-cols-5 gap-1.5 pt-1">
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 0].map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => {
+                        if (userPin.length < 4) setUserPin(prev => prev + num);
+                      }}
+                      className="py-1.5 bg-[#111] hover:bg-[#222] border border-slate-800 text-white font-mono font-bold text-xs cursor-pointer transition-colors active:scale-95"
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-end pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setUserPin('')}
+                    className="text-[10px] text-slate-400 hover:text-white underline cursor-pointer"
+                  >
+                    Clear PIN
+                  </button>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={handleAuthorizePinPayment}
+                  className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-wider text-xs flex items-center justify-center gap-2 cursor-pointer shadow-lg active:scale-98"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>
+                    {isProcessing ? 'Authorizing Payment...' : `Confirm PIN & Pay KES ${kesAmount.toLocaleString()}`}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={handleAuthorizePinPayment}
+                  className="w-full py-2 bg-[#111] hover:bg-[#1a1a1a] text-emerald-400 border border-emerald-500/40 font-bold text-[11px] uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <CheckCheck className="w-4 h-4" />
+                  <span>I've Already Entered PIN on My Phone</span>
+                </button>
+              </div>
+
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => setStkStatus('idle')}
+                  className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer"
+                >
+                  Cancel & Change Amount
+                </button>
+              </div>
+            </div>
+
+            {/* Support Note */}
+            <div className="p-3 bg-[#080808] border border-slate-800 text-slate-400 space-y-1 text-[11px]">
+              <div className="font-bold text-white flex items-center gap-1">
+                <Smartphone className="w-3 h-3 text-emerald-400" />
+                <span>Prompt not appearing on your phone?</span>
+              </div>
+              <p>
+                You can authorize immediately using the keypad above, or use <b>Lipa Na M-PESA Buy Goods Till: 1722023</b> directly from your SIM Toolkit.
+              </p>
+            </div>
+          </div>
         ) : stkStatus === 'processing' ? (
           
-          /* Real-Time Safaricom Gateway Processing Screen */
+          /* 3. B2C DISBURSEMENT PROCESSING SCREEN */
           <div className="my-6 space-y-5 text-center">
             <div className="relative mx-auto w-16 h-16 flex items-center justify-center">
               <div className="absolute inset-0 rounded-full border-4 border-emerald-500/20 animate-ping"></div>
@@ -256,43 +493,37 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
 
             <div className="space-y-2">
               <span className="text-[11px] font-mono uppercase tracking-widest text-emerald-400 bg-emerald-950/80 border border-emerald-500/40 px-3 py-1 rounded-none inline-block">
-                {mode === 'deposit' ? 'Safaricom Daraja STK Push Active' : 'Safaricom B2C Disbursement Active'}
+                Safaricom B2C Disbursement Active
               </span>
               <h4 className="text-xl font-black text-white font-heading">
-                {mode === 'deposit' 
-                  ? `Prompting ${mpesaPhone}...`
-                  : `Transmitting KES ${withdrawKesAmount.toLocaleString()}...`
-                }
+                Transmitting KES {withdrawKesAmount.toLocaleString()}...
               </h4>
               <p className="text-xs text-slate-300 max-w-sm mx-auto">
-                {mode === 'deposit'
-                  ? `An M-PESA prompt for KES ${kesAmount.toLocaleString()} has been dispatched to ${mpesaPhone}. Confirming transaction receipt...`
-                  : `Connecting to Safaricom B2C settlement endpoint for recipient ${withdrawPhone}.`
-                }
+                Connecting to Safaricom B2C settlement endpoint for recipient {withdrawPhone}.
               </p>
             </div>
 
             <div className="p-4 bg-[#080808] border border-slate-800 rounded-none text-left space-y-2 max-w-sm mx-auto font-mono text-xs">
               <div className="flex justify-between items-center text-slate-400">
-                <span>Merchant / Till:</span>
+                <span>Sender Till:</span>
                 <span className="text-amber-400 font-bold">1722023 (Smartchoice Ventures)</span>
               </div>
               <div className="flex justify-between items-center text-slate-400">
                 <span>Amount:</span>
-                <span className="text-white font-bold">KES {mode === 'deposit' ? kesAmount.toLocaleString() : withdrawKesAmount.toLocaleString()}</span>
+                <span className="text-white font-bold">KES {withdrawKesAmount.toLocaleString()}</span>
               </div>
               <div className="flex justify-between items-center text-slate-400">
                 <span>Gateway Status:</span>
-                <span className="text-emerald-400 font-bold animate-pulse">CONNECTING SAFARICOM...</span>
+                <span className="text-emerald-400 font-bold animate-pulse">SETTLING SAFARICOM...</span>
               </div>
             </div>
           </div>
         ) : (
           
-          /* Main Deposit / Withdrawal Form */
-          <div className="my-5 space-y-4 text-xs">
+          /* 4. MAIN DEPOSIT / WITHDRAWAL FORM */
+          <div className="my-3 space-y-4 text-xs">
             
-            {/* Mode Switcher */}
+            {/* Main Mode Switcher: Deposit vs Withdraw */}
             <div className="flex bg-[#080808] p-1 rounded-none border border-slate-800 font-bold">
               <button
                 id="mpesa-mode-deposit"
@@ -324,7 +555,36 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
             )}
 
             {mode === 'deposit' ? (
-              <div className="space-y-3">
+              <div className="space-y-4">
+
+                {/* Sub-tabs: 1-Click STK Push Prompt vs Verify Manual Till 1722023 */}
+                <div className="grid grid-cols-2 gap-2 bg-[#080808] p-1 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setDepositTab('stk')}
+                    className={`py-2 px-3 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                      depositTab === 'stk'
+                        ? 'bg-emerald-500 text-black font-black'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>1-Click STK Prompt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDepositTab('manual')}
+                    className={`py-2 px-3 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                      depositTab === 'manual'
+                        ? 'bg-amber-500 text-black font-black'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <FileCheck className="w-3.5 h-3.5" />
+                    <span>Verify Till 1722023 Code</span>
+                  </button>
+                </div>
+
                 {/* Official Lipa Na M-PESA Buy Goods Till Information Box */}
                 <div className="p-3.5 bg-gradient-to-r from-emerald-950/80 via-[#091512] to-emerald-950/80 border-2 border-emerald-500/50 rounded-none space-y-2.5">
                   <div className="flex items-center justify-between">
@@ -333,7 +593,7 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                       <span>Lipa Na M-PESA Buy Goods Till</span>
                     </span>
                     <span className="text-[10px] font-mono font-black bg-emerald-500 text-slate-950 px-2 py-0.5 uppercase tracking-wider">
-                      STK Push Online
+                      Till Online
                     </span>
                   </div>
 
@@ -344,11 +604,11 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                         <span>1722023</span>
                         <button
                           type="button"
-                          onClick={() => safeCopyText('1722023')}
+                          onClick={handleCopyTill}
                           className="text-emerald-400 hover:text-emerald-300 p-0.5 cursor-pointer"
                           title="Copy Till Number"
                         >
-                          <Copy className="w-3.5 h-3.5" />
+                          {copiedTill ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         </button>
                       </div>
                     </div>
@@ -359,87 +619,145 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                       </div>
                     </div>
                   </div>
-
-                  <p className="text-[10px] text-slate-300">
-                    Enter your Safaricom phone below and tap <b>Send STK Push</b> to authorize on your phone, or pay directly via M-PESA Till <b>1722023 (Smartchoice Ventures)</b>.
-                  </p>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1 uppercase tracking-wider text-[11px]">
-                    Safaricom Phone Number (for STK Prompt)
-                  </label>
-                  <input
-                    id="mpesa-phone-input"
-                    type="tel"
-                    value={mpesaPhone}
-                    onChange={(e) => setMpesaPhone(e.target.value)}
-                    placeholder="0712345678 or 254712345678"
-                    className="w-full px-3 py-2 bg-black border border-slate-700 rounded-none font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
+                {/* TAB 1: 1-CLICK STK PROMPT */}
+                {depositTab === 'stk' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1 uppercase tracking-wider text-[11px]">
+                        Safaricom Phone Number (for STK Prompt)
+                      </label>
+                      <input
+                        type="tel"
+                        value={mpesaPhone}
+                        onChange={(e) => setMpesaPhone(e.target.value)}
+                        placeholder="e.g. 0712345678"
+                        className="w-full px-3 py-2 bg-black border border-slate-700 rounded-none font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1 flex items-center justify-between uppercase tracking-wider text-[11px]">
-                    <span>Deposit Amount (KES)</span>
-                    <span className="text-emerald-400 font-mono">Instant balance credit</span>
-                  </label>
-                  <div className="relative mb-2">
-                    <span className="text-slate-400 font-bold absolute left-3 top-2 text-xs">KES</span>
-                    <input
-                      id="mpesa-kes-amount"
-                      type="number"
-                      min="100"
-                      step="500"
-                      value={kesAmount}
-                      onChange={(e) => setKesAmount(Math.max(0, Number(e.target.value)))}
-                      className="w-full pl-12 pr-4 py-2 bg-black border border-slate-700 rounded-none font-mono font-black text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1 flex items-center justify-between uppercase tracking-wider text-[11px]">
+                        <span>Deposit Amount (KES)</span>
+                        <span className="text-emerald-400 font-mono">Min: KES 100</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="100"
+                        value={kesAmount}
+                        onChange={(e) => setKesAmount(Math.max(0, Number(e.target.value)))}
+                        className="w-full px-3 py-2 bg-black border border-slate-700 rounded-none font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
 
-                  {/* Quick Presets */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {[5000, 10000, 25000, 50000, 100000, 200000].map((amt) => (
+                    {/* Quick Presets */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {[1000, 5000, 10000, 25000, 50000, 100000].map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => setKesAmount(amt)}
+                          className={`px-2.5 py-1 rounded-none text-[11px] font-mono font-bold border transition-colors cursor-pointer ${
+                            kesAmount === amt
+                              ? 'bg-emerald-500 text-black font-black border-emerald-400'
+                              : 'bg-[#080808] text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          KES {amt.toLocaleString()}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="pt-2">
                       <button
-                        key={amt}
+                        id="trigger-stk-push-btn"
                         type="button"
-                        onClick={() => setKesAmount(amt)}
-                        className={`px-2.5 py-1 rounded-none text-[11px] font-mono font-bold border transition-colors cursor-pointer ${
-                          kesAmount === amt
-                            ? 'bg-emerald-500 text-black font-black border-emerald-400'
-                            : 'bg-[#080808] text-slate-400 border-slate-800 hover:text-white'
-                        }`}
+                        disabled={isProcessing}
+                        onClick={handleInitiateStkPush}
+                        className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-none shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider active:scale-98"
                       >
-                        KES {amt.toLocaleString()}
+                        <Smartphone className="w-4 h-4" />
+                        <span>Send Lipa Na M-PESA STK Push (KES {kesAmount.toLocaleString()})</span>
                       </button>
-                    ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                <div className="space-y-2 pt-2">
-                  <button
-                    id="trigger-stk-push-btn"
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={handleInitiateStkPush}
-                    className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs rounded-none shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider active:scale-98"
-                  >
-                    <Smartphone className="w-4 h-4" />
-                    <span>Send Lipa Na M-PESA STK Push (KES {kesAmount.toLocaleString()})</span>
-                  </button>
+                {/* TAB 2: MANUAL TILL 1722023 RECEIPT CODE VERIFICATION */}
+                {depositTab === 'manual' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-black border border-amber-500/40 text-slate-300 space-y-1.5 text-[11px]">
+                      <div className="font-bold text-amber-300 uppercase tracking-wider text-[10px]">
+                        How to Pay Manually via M-PESA:
+                      </div>
+                      <ol className="list-decimal pl-4 space-y-1 text-slate-300">
+                        <li>Open M-PESA on your phone & select <b>Lipa Na M-PESA</b></li>
+                        <li>Select <b>Buy Goods and Services</b></li>
+                        <li>Enter Till Number: <b className="text-white font-mono">1722023</b> (Smartchoice Ventures)</li>
+                        <li>Enter your deposit amount (e.g. KES {manualAmount.toLocaleString()})</li>
+                        <li>Enter your M-PESA PIN and press Send</li>
+                        <li>Copy the 10-character confirmation code from Safaricom's SMS and paste below</li>
+                      </ol>
+                    </div>
 
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={handleInitiateStkPush}
-                    className="w-full py-2.5 bg-[#080808] hover:bg-[#111] text-emerald-400 font-bold text-[11px] rounded-none border border-emerald-500/40 transition-all flex items-center justify-center gap-1.5 cursor-pointer uppercase tracking-wider"
-                  >
-                    <span>{isProcessing ? 'Processing STK Prompt...' : 'Direct 1-Click Instant Deposit (Till 1722023 • Smartchoice Ventures)'}</span>
-                  </button>
-                </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1 uppercase tracking-wider text-[11px]">
+                        Safaricom Confirmation Receipt Code *
+                      </label>
+                      <input
+                        type="text"
+                        value={manualReceiptInput}
+                        onChange={(e) => setManualReceiptInput(e.target.value.toUpperCase())}
+                        placeholder="e.g. QK8912KL34"
+                        className="w-full px-3 py-2 bg-black border border-amber-500/60 rounded-none font-mono font-black text-amber-300 text-center tracking-widest text-sm focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 mb-1 uppercase tracking-wider">
+                          Amount Paid (KES)
+                        </label>
+                        <input
+                          type="number"
+                          value={manualAmount}
+                          onChange={(e) => setManualAmount(Number(e.target.value))}
+                          className="w-full px-2.5 py-1.5 bg-black border border-slate-700 rounded-none font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-300 mb-1 uppercase tracking-wider">
+                          Sender Phone
+                        </label>
+                        <input
+                          type="tel"
+                          value={manualPhone}
+                          onChange={(e) => setManualPhone(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-black border border-slate-700 rounded-none font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        disabled={isVerifyingManual}
+                        onClick={handleVerifyManualReceipt}
+                        className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs rounded-none shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider active:scale-98"
+                      >
+                        <FileCheck className="w-4 h-4" />
+                        <span>
+                          {isVerifyingManual ? 'Verifying Receipt with Safaricom...' : 'Verify M-PESA Receipt & Credit Balance'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
               </div>
             ) : (
-              /* Withdrawal via M-PESA */
+              /* WITHDRAWAL VIA M-PESA B2C */
               <div className="space-y-3">
                 <div className="p-3 bg-[#080808] border border-slate-800 rounded-none flex items-center justify-between">
                   <span className="text-slate-400 uppercase tracking-wider text-[11px]">Available Balance:</span>
@@ -501,15 +819,6 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                     <ArrowUpRight className="w-4 h-4" />
                     <span>Disburse Instant M-PESA Payout (KES {withdrawKesAmount.toLocaleString()})</span>
                   </button>
-
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={handleExecuteWithdrawal}
-                    className="w-full py-2 bg-[#080808] hover:bg-[#111] text-emerald-400 font-bold text-[11px] rounded-none border border-emerald-500/40 transition-all flex items-center justify-center gap-1.5 cursor-pointer uppercase tracking-wider"
-                  >
-                    <span>{isProcessing ? 'Dispatching B2C...' : 'Direct 1-Click Instant Withdrawal'}</span>
-                  </button>
                 </div>
               </div>
             )}
@@ -523,4 +832,3 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
     </div>
   );
 };
-

@@ -32,7 +32,10 @@ import {
   Check,
   Save,
   Coins,
-  QrCode
+  QrCode,
+  Settings,
+  Smartphone,
+  X
 } from 'lucide-react';
 import { UserProfile, PlatformContacts } from '../types';
 import { api } from '../services/api';
@@ -88,6 +91,56 @@ export const AdminCustomerDatabase: React.FC<AdminCustomerDatabaseProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedCustomer, setSelectedCustomer] = useState<ServerCustomerRecord | null>(null);
   const [editSuccessMsg, setEditSuccessMsg] = useState<string>('');
+
+  // Safaricom Daraja API Settings State
+  const [showDarajaModal, setShowDarajaModal] = useState<boolean>(false);
+  const [darajaConsumerKey, setDarajaConsumerKey] = useState<string>('');
+  const [darajaConsumerSecret, setDarajaConsumerSecret] = useState<string>('');
+  const [darajaPasskey, setDarajaPasskey] = useState<string>('');
+  const [darajaShortcode, setDarajaShortcode] = useState<string>('1722023');
+  const [darajaTillNumber, setDarajaTillNumber] = useState<string>('1722023');
+  const [darajaEnvironment, setDarajaEnvironment] = useState<'sandbox' | 'production'>('production');
+  const [darajaSaveMsg, setDarajaSaveMsg] = useState<string>('');
+  const [isSavingDaraja, setIsSavingDaraja] = useState<boolean>(false);
+
+  const handleOpenDarajaConfig = async () => {
+    setShowDarajaModal(true);
+    setDarajaSaveMsg('');
+    try {
+      const cfg = await api.getDarajaConfig();
+      if (cfg) {
+        setDarajaEnvironment(cfg.environment || 'production');
+        setDarajaShortcode(cfg.shortCode || '1722023');
+        setDarajaTillNumber(cfg.tillNumber || '1722023');
+      }
+    } catch {}
+  };
+
+  const handleSaveDarajaConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingDaraja(true);
+    setDarajaSaveMsg('');
+    try {
+      const res = await api.saveDarajaConfig({
+        consumerKey: darajaConsumerKey,
+        consumerSecret: darajaConsumerSecret,
+        passkey: darajaPasskey,
+        shortCode: darajaShortcode,
+        tillNumber: darajaTillNumber,
+        environment: darajaEnvironment
+      });
+      setIsSavingDaraja(false);
+      if (res.success) {
+        setDarajaSaveMsg('✓ Safaricom Daraja API credentials saved and active.');
+        setTimeout(() => setDarajaSaveMsg(''), 4000);
+      } else {
+        setDarajaSaveMsg(res.error || 'Failed to save configuration');
+      }
+    } catch (err: any) {
+      setIsSavingDaraja(false);
+      setDarajaSaveMsg(err?.message || 'Error saving Daraja configuration');
+    }
+  };
 
   // Owner Personal Crypto Vault Addresses
   const [ownerUsdtBep20, setOwnerUsdtBep20] = useState<string>(
@@ -897,9 +950,19 @@ export const AdminCustomerDatabase: React.FC<AdminCustomerDatabaseProps> = ({
                     Lipa Na M-PESA Direct Daraja STK Push & Settlement Gateway (Online)
                   </p>
                 </div>
-                <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-full font-mono">
-                  Safaricom Gateway: ONLINE
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleOpenDarajaConfig}
+                    className="text-xs bg-[#111] hover:bg-[#1a1a1a] text-amber-300 border border-amber-500/40 px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer shadow transition-all active:scale-95"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Configure Daraja API</span>
+                  </button>
+                  <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-full font-mono">
+                    Safaricom Gateway: ONLINE
+                  </span>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -1445,6 +1508,123 @@ export const AdminCustomerDatabase: React.FC<AdminCustomerDatabaseProps> = ({
                   </div>
                 </div>
 
+              </div>
+            </div>
+          )}
+
+          {/* DARAJA API CONFIGURATION MODAL */}
+          {showDarajaModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div className="bg-[#0C101A] border border-amber-500/40 rounded-2xl max-w-lg w-full p-6 text-white shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500 text-black flex items-center justify-center font-black text-xs">
+                      STK
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-white">Safaricom Daraja API Settings</h3>
+                      <p className="text-[11px] text-slate-400">Configure Live or Sandbox credentials for M-PESA Express</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowDarajaModal(false)}
+                    className="p-1 text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {darajaSaveMsg && (
+                  <div className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                    darajaSaveMsg.includes('✓') 
+                      ? 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300' 
+                      : 'bg-rose-950/80 border border-rose-500/40 text-rose-300'
+                  }`}>
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{darajaSaveMsg}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveDarajaConfig} className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-300 mb-1">Environment</label>
+                      <select
+                        value={darajaEnvironment}
+                        onChange={(e) => setDarajaEnvironment(e.target.value as any)}
+                        className="w-full px-3 py-2 bg-[#07090F] border border-slate-700 rounded-xl text-white font-mono"
+                      >
+                        <option value="production">Production (Live)</option>
+                        <option value="sandbox">Sandbox (Testing)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-300 mb-1">ShortCode / Till</label>
+                      <input
+                        type="text"
+                        value={darajaShortcode}
+                        onChange={(e) => setDarajaShortcode(e.target.value)}
+                        placeholder="1722023"
+                        className="w-full px-3 py-2 bg-[#07090F] border border-slate-700 rounded-xl text-white font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1">Consumer Key</label>
+                    <input
+                      type="text"
+                      value={darajaConsumerKey}
+                      onChange={(e) => setDarajaConsumerKey(e.target.value)}
+                      placeholder="Paste Daraja Consumer Key"
+                      className="w-full px-3 py-2 bg-[#07090F] border border-slate-700 rounded-xl text-white font-mono text-[11px]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1">Consumer Secret</label>
+                    <input
+                      type="password"
+                      value={darajaConsumerSecret}
+                      onChange={(e) => setDarajaConsumerSecret(e.target.value)}
+                      placeholder="Paste Daraja Consumer Secret"
+                      className="w-full px-3 py-2 bg-[#07090F] border border-slate-700 rounded-xl text-white font-mono text-[11px]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1">Online Passkey</label>
+                    <input
+                      type="password"
+                      value={darajaPasskey}
+                      onChange={(e) => setDarajaPasskey(e.target.value)}
+                      placeholder="Paste Daraja Lipa Na M-PESA Online Passkey"
+                      className="w-full px-3 py-2 bg-[#07090F] border border-slate-700 rounded-xl text-white font-mono text-[11px]"
+                    />
+                  </div>
+
+                  <p className="text-[10px] text-slate-400">
+                    If credentials are not yet entered, the platform seamlessly provides on-screen Safaricom PIN prompts and automated Till 1722023 receipt code verification so clients are never blocked.
+                  </p>
+
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      type="submit"
+                      disabled={isSavingDaraja}
+                      className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-black py-2.5 rounded-xl uppercase tracking-wider text-xs cursor-pointer shadow-lg"
+                    >
+                      {isSavingDaraja ? 'Saving Settings...' : 'Save Daraja Settings'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDarajaModal(false)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           )}

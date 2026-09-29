@@ -9,13 +9,19 @@ export interface BackendHealthResponse {
 }
 
 export interface StkPushResponse {
-  ResponseCode: string;
-  ResponseDescription: string;
-  MerchantRequestID: string;
-  CheckoutRequestID: string;
-  CustomerMessage: string;
+  success?: boolean;
+  realDaraja?: boolean;
+  configured?: boolean;
+  requiresManualReceipt?: boolean;
+  ResponseCode?: string;
+  ResponseDescription?: string;
+  MerchantRequestID?: string;
+  CheckoutRequestID?: string;
+  CustomerMessage?: string;
   receipt?: string;
   till?: string;
+  error?: string;
+  merchantName?: string;
 }
 
 export const api = {
@@ -137,6 +143,50 @@ export const api = {
       return await res.json();
     } catch {
       return null;
+    }
+  },
+
+  // Verify M-PESA Till payment receipt code
+  async verifyMpesaReceipt(params: {
+    receiptNumber: string;
+    amountKES: number;
+    phoneNumber?: string;
+    customerName?: string;
+    email?: string;
+  }): Promise<{ success: boolean; message?: string; error?: string; receiptNumber?: string; transaction?: any }> {
+    try {
+      const res = await fetch('/api/mpesa/verify-receipt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error verifying M-PESA receipt' };
+    }
+  },
+
+  // Get Daraja configuration
+  async getDarajaConfig(): Promise<any> {
+    try {
+      const res = await fetch('/api/mpesa/config');
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  // Save Daraja configuration
+  async saveDarajaConfig(config: any): Promise<{ success: boolean; error?: string; message?: string }> {
+    try {
+      const res = await fetch('/api/mpesa/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to save Daraja config' };
     }
   },
 

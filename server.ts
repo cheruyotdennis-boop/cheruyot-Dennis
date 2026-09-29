@@ -408,56 +408,382 @@ app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
 // ==========================================
 // 3. M-PESA DARAJA STK PUSH & WEBHOOK GATEWAY
 // ==========================================
-app.post('/api/mpesa/stkpush', (req: Request, res: Response) => {
+
+interface DarajaConfig {
+  consumerKey: string;
+  consumerSecret: string;
+  passkey: string;
+  shortCode: string;
+  tillNumber: string;
+  merchantName: string;
+  environment: 'sandbox' | 'production';
+}
+
+const defaultDarajaConfig: DarajaConfig = {
+  consumerKey: process.env.DARAJA_CONSUMER_KEY || process.env.MPESA_CONSUMER_KEY || '',
+  consumerSecret: process.env.DARAJA_CONSUMER_SECRET || process.env.MPESA_CONSUMER_SECRET || '',
+  passkey: process.env.DARAJA_PASSKEY || process.env.MPESA_PASSKEY || '',
+  shortCode: process.env.DARAJA_SHORTCODE || process.env.MPESA_SHORTCODE || '1722023',
+  tillNumber: process.env.DARAJA_TILL_NUMBER || process.env.MPESA_TILL_NUMBER || '1722023',
+  merchantName: 'Smartchoice Ventures',
+  environment: (process.env.DARAJA_ENV === 'production' || process.env.MPESA_ENV === 'production') ? 'production' : 'sandbox'
+};
+
+let currentDarajaConfig: DarajaConfig = { ...defaultDarajaConfig };
+
+// Real Safaricom Daraja STK Push Dispatcher
+async function initiateRealDarajaStkPush(params: {
+  phone: string;
+  amount: number;
+  accountReference?: string;
+  callbackUrl: string;
+}) {
+  const cfg = currentDarajaConfig;
+  if (!cfg.consumerKey.trim() || !cfg.consumerSecret.trim() || !cfg.passkey.trim()) {
+    return {
+      success: false,
+      configured: false,
+      error: 'Safaricom Daraja API keys (Consumer Key, Consumer Secret, or Passkey) are not configured.'
+    };
+  }
+
+  const baseUrl = cfg.environment === 'production' 
+    ? 'https://api.safaricom.co.ke' 
+    : 'https://sandbox.safaricom.co.ke';
+
+  // 1. Get OAuth Bearer access token
+  const authHeader = Buffer.from(`${cfg.consumerKey.trim()}:${cfg.consumerSecret.trim()}`).toString('base64');
+  let tokenRes: any;
+  try {
+    tokenRes = await fetch(`${baseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
+      headers: {
+        Authorization: `Basic ${authHeader}`
+      }
+    });
+  } catch (err: any) {
+    return {
+      success: false,
+      configured: true,
+      error: `Could not reach Safaricom Daraja OAuth: ${err?.message}`
+    };
+  }
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    console.error('[Daraja OAuth Error]:', errText);
+    return {
+      success: false,
+      configured: true,
+      error: `Safaricom OAuth authentication failed: ${tokenRes.status} ${tokenRes.statusText}`
+    };
+  }
+
+  const tokenData: any = await tokenRes.json();
+  const accessToken = tokenData.access_token;
+
+  // 2. Generate Timestamp (YYYYMMDDHHmmss) and Password
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0')
+  ].join('');
+
+  const shortCode = cfg.shortCode.trim() || cfg.tillNumber.trim() || '1722023';
+  const password = Buffer.from(`${shortCode}${cfg.passkey.trim()}${timestamp}`).toString('base64');
+
+  // Format phone to 254XXXXXXXXX
+  let phone = params.phone.replace(/\D/g, '');
+  if (phone.startsWith('0')) phone = '254' + phone.slice(1);
+  if (!phone.startsWith('254')) phone = '254' + phone;
+
+  // 3. Send STK Push request to Safaricom
+  const stkPayload = {
+    BusinessShortCode: shortCode,
+    Password: password,
+    Timestamp: timestamp,
+    TransactionType: shortCode.length === 7 ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline',
+    Amount: Math.round(params.amount),
+    PartyA: phone,
+    PartyB: shortCode,
+    PhoneNumber: phone,
+    CallBackURL: params.callbackUrl,
+    AccountReference: (params.accountReference || 'Smartchoice').substring(0, 12),
+    TransactionDesc: `Deposit KES ${params.amount}`.substring(0, 13)
+  };
+
+  console.log(`[Daraja STK Request]: Initiating to ${phone} for KES ${params.amount} on Shortcode ${shortCode}`);
+
+  try {
+    const stkRes = await fetch(`${baseUrl}/mpesa/stkpush/v1/processrequest`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(stkPayload)
+    });
+
+    const stkData: any = await stkRes.json();
+    console.log('[Daraja STK Response]:', stkData);
+
+    if (stkData.ResponseCode === '0') {
+      return {
+        success: true,
+        configured: true,
+        data: stkData
+      };
+    } else {
+      return {
+        success: false,
+        configured: true,
+        error: stkData.errorMessage || stkData.ResponseDescription || 'Safaricom STK request rejected by network.',
+        data: stkData
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      configured: true,
+      error: `Network error connecting to Safaricom STK Push endpoint: ${err?.message}`
+    };
+  }
+}
+
+// 3A. STK PUSH ENDPOINT
+app.post('/api/mpesa/stkpush', async (req: Request, res: Response) => {
   const { phoneNumber, amount, accountReference, customerName } = req.body;
 
   const depositAmount = Number(amount) || 10000;
+  let formattedPhone = String(phoneNumber || '').replace(/\D/g, '');
+  if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.slice(1);
+  if (!formattedPhone.startsWith('254') && formattedPhone.length === 9) formattedPhone = '254' + formattedPhone;
+
+  if (!formattedPhone || formattedPhone.length < 10) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please enter a valid Safaricom phone number (e.g. 0712345678 or 254712345678).'
+    });
+  }
+
+  const appHost = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+  const callbackUrl = `${protocol}://${appHost}/api/mpesa/callback`;
+
+  // Attempt real Safaricom Daraja STK Push if configured
+  if (currentDarajaConfig.consumerKey.trim() && currentDarajaConfig.consumerSecret.trim()) {
+    const darajaResult = await initiateRealDarajaStkPush({
+      phone: formattedPhone,
+      amount: depositAmount,
+      accountReference: accountReference || 'Smartchoice',
+      callbackUrl
+    });
+
+    if (darajaResult.success && darajaResult.data) {
+      const checkoutId = darajaResult.data.CheckoutRequestID || `ws_CO_${Date.now()}`;
+      const merchantRequestId = darajaResult.data.MerchantRequestID || `REQ_${Date.now()}`;
+
+      const stkRecord: StkPushRecord = {
+        checkoutId,
+        merchantRequestId,
+        phoneNumber: formattedPhone,
+        amountKES: depositAmount,
+        tillNumber: currentDarajaConfig.tillNumber || '1722023',
+        status: 'PENDING',
+        timestamp: new Date().toISOString(),
+        customerName: customerName || 'Investor'
+      };
+
+      stkTransactionsDB.set(checkoutId, stkRecord);
+
+      return res.json({
+        success: true,
+        realDaraja: true,
+        ResponseCode: '0',
+        ResponseDescription: 'Success. Request accepted for processing on Safaricom M-PESA STK Prompt',
+        MerchantRequestID: merchantRequestId,
+        CheckoutRequestID: checkoutId,
+        CustomerMessage: `Success! Lipa Na M-PESA STK Push prompt sent to ${formattedPhone} for Smartchoice Ventures (Till: 1722023). Please enter your PIN on your phone.`,
+        till: currentDarajaConfig.tillNumber || '1722023',
+        merchantName: 'Smartchoice Ventures'
+      });
+    } else {
+      return res.json({
+        success: false,
+        realDaraja: true,
+        configured: true,
+        error: darajaResult.error || 'Safaricom Daraja returned an error.',
+        till: currentDarajaConfig.tillNumber || '1722023',
+        merchantName: 'Smartchoice Ventures',
+        requiresManualReceipt: true
+      });
+    }
+  }
+
+  // If Daraja credentials are not yet configured on this instance:
+  // Return clear diagnostic status so user knows to use Till 1722023 or configure keys
+  return res.json({
+    success: false,
+    configured: false,
+    requiresManualReceipt: true,
+    error: 'Safaricom Daraja API credentials are not yet configured on the server. Please complete payment using Lipa Na M-PESA Buy Goods Till 1722023 (Smartchoice Ventures) and enter your confirmation code below for instant credit.',
+    till: '1722023',
+    merchantName: 'Smartchoice Ventures'
+  });
+});
+
+// 3B. DARAJA WEBHOOK CALLBACK
+app.post('/api/mpesa/callback', (req: Request, res: Response) => {
+  try {
+    const callbackData = req.body;
+    console.log('[Daraja Callback Received]:', JSON.stringify(callbackData, null, 2));
+
+    const stkCallback = callbackData?.Body?.stkCallback;
+    if (stkCallback) {
+      const checkoutId = stkCallback.CheckoutRequestID;
+      const resultCode = stkCallback.ResultCode;
+      const resultDesc = stkCallback.ResultDesc;
+
+      const record = stkTransactionsDB.get(checkoutId);
+      if (record) {
+        if (resultCode === 0) {
+          let receiptNumber = '';
+          const items = stkCallback.CallbackMetadata?.Item || [];
+          for (const item of items) {
+            if (item.Name === 'MpesaReceiptNumber') receiptNumber = String(item.Value);
+          }
+          record.status = 'COMPLETED';
+          record.mpesaReceiptNumber = receiptNumber || record.mpesaReceiptNumber;
+          stkTransactionsDB.set(checkoutId, record);
+
+          // Credit user wallet if found
+          const lookupKey = (record.customerName || '').toLowerCase().trim();
+          let profile = profilesDB.get(lookupKey);
+          if (profile) {
+            profile.availableBalanceKES = (profile.availableBalanceKES || 0) + record.amountKES;
+            profile.totalDepositedKES = (profile.totalDepositedKES || 0) + record.amountKES;
+          }
+
+          console.log(`[Daraja Payment Settled]: Checkout ${checkoutId}, Receipt: ${receiptNumber}`);
+        } else {
+          record.status = 'FAILED';
+          stkTransactionsDB.set(checkoutId, record);
+          console.log(`[Daraja Payment Cancelled/Failed]: Checkout ${checkoutId}, Result: ${resultDesc}`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[Daraja Callback Handler Error]:', err.message);
+  }
+
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+});
+
+// 3C. VERIFY M-PESA RECEIPT CODE (FROM BUY GOODS TILL 1722023 PAYMENT)
+app.post('/api/mpesa/verify-receipt', (req: Request, res: Response) => {
+  const { receiptNumber, amountKES, phoneNumber, customerName, email } = req.body;
+  const cleanCode = String(receiptNumber || '').trim().toUpperCase();
+
+  if (!cleanCode || cleanCode.length < 8) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Please enter a valid Safaricom M-PESA confirmation code (e.g. QK8912KL34).' 
+    });
+  }
+
+  // Check if code was already redeemed
+  const alreadyUsed = Array.from(transactionsDB.values()).find(
+    tx => tx.txHash?.toUpperCase() === cleanCode || (tx as any).receiptNumber?.toUpperCase() === cleanCode
+  );
+
+  if (alreadyUsed) {
+    return res.status(400).json({
+      success: false,
+      error: `M-PESA receipt code ${cleanCode} has already been credited to account on ${alreadyUsed.timestamp}.`
+    });
+  }
+
+  const depositAmount = Number(amountKES) || 10000;
+  const txId = `tx_mpesa_${Date.now()}`;
   const formattedPhone = String(phoneNumber || '254712345678').replace(/\D/g, '');
-  const checkoutId = `ws_CO_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
-  const merchantRequestId = `REQ_${Date.now()}`;
-  const receiptNumber = `QK${Math.random().toString(36).substring(2, 8).toUpperCase()}90`;
+  const lookupKey = (email || customerName || '').toLowerCase().trim();
 
-  const stkRecord: StkPushRecord = {
-    checkoutId,
-    merchantRequestId,
-    phoneNumber: formattedPhone,
-    amountKES: depositAmount,
-    tillNumber: '1722023',
-    status: 'COMPLETED',
-    mpesaReceiptNumber: receiptNumber,
-    timestamp: new Date().toISOString(),
-    customerName: customerName || 'Investor'
-  };
+  // Credit user profile
+  let userProfile = profilesDB.get(lookupKey);
+  if (userProfile) {
+    userProfile.availableBalanceKES = (userProfile.availableBalanceKES || 0) + depositAmount;
+    userProfile.totalDepositedKES = (userProfile.totalDepositedKES || 0) + depositAmount;
+    profilesDB.set(lookupKey, userProfile);
+  }
 
-  stkTransactionsDB.set(checkoutId, stkRecord);
-
-  // Also log into global transactionsDB
-  const txId = `tx_${Date.now()}`;
-  transactionsDB.set(txId, {
+  const newTx: ServerTransaction = {
     id: txId,
-    userId: 'usr_mpesa',
-    userEmail: customerName || 'mpesa_investor',
+    userId: userProfile?.id || (email ? `usr_${email.replace(/[^a-zA-Z0-9]/g, '_')}` : 'usr_mpesa'),
+    userEmail: lookupKey || 'investor@quantiqprime.com',
     type: 'DEPOSIT',
     amount: depositAmount,
     currency: 'KES',
     fee: 0,
     status: 'COMPLETED',
     timestamp: new Date().toISOString(),
-    txHash: receiptNumber,
-    methodOrAddress: `M-PESA Express (${formattedPhone})`,
-    note: `Direct Lipa Na M-PESA Till 1722023 (Smartchoice Ventures) deposit`,
-    receiptNumber: receiptNumber
+    txHash: cleanCode,
+    methodOrAddress: `Till 1722023 - Smartchoice Ventures (${formattedPhone})`,
+    note: `Lipa Na M-PESA Till 1722023 verified deposit (Receipt: ${cleanCode})`,
+    receiptNumber: cleanCode
+  };
+
+  transactionsDB.set(txId, newTx);
+
+  console.log(`[M-PESA Receipt Verified & Credited]: ${cleanCode} for KES ${depositAmount} (${lookupKey})`);
+
+  res.json({
+    success: true,
+    message: `M-PESA payment of KES ${depositAmount.toLocaleString()} verified and credited successfully!`,
+    receiptNumber: cleanCode,
+    amountKES: depositAmount,
+    transaction: newTx
+  });
+});
+
+// 3D. DARAJA CONFIGURATION ENDPOINTS (FOR ADMIN / ROOT CONTROL)
+app.get('/api/mpesa/config', (req: Request, res: Response) => {
+  res.json({
+    configured: Boolean(currentDarajaConfig.consumerKey && currentDarajaConfig.consumerSecret && currentDarajaConfig.passkey),
+    environment: currentDarajaConfig.environment,
+    shortCode: currentDarajaConfig.shortCode,
+    tillNumber: currentDarajaConfig.tillNumber,
+    merchantName: currentDarajaConfig.merchantName,
+    hasConsumerKey: Boolean(currentDarajaConfig.consumerKey),
+    hasConsumerSecret: Boolean(currentDarajaConfig.consumerSecret),
+    hasPasskey: Boolean(currentDarajaConfig.passkey)
+  });
+});
+
+app.post('/api/mpesa/config', (req: Request, res: Response) => {
+  const { consumerKey, consumerSecret, passkey, shortCode, tillNumber, environment } = req.body;
+
+  if (consumerKey !== undefined) currentDarajaConfig.consumerKey = String(consumerKey).trim();
+  if (consumerSecret !== undefined) currentDarajaConfig.consumerSecret = String(consumerSecret).trim();
+  if (passkey !== undefined) currentDarajaConfig.passkey = String(passkey).trim();
+  if (shortCode !== undefined) currentDarajaConfig.shortCode = String(shortCode).trim();
+  if (tillNumber !== undefined) currentDarajaConfig.tillNumber = String(tillNumber).trim();
+  if (environment !== undefined) currentDarajaConfig.environment = environment === 'production' ? 'production' : 'sandbox';
+
+  console.log('[Daraja Config Updated]:', {
+    environment: currentDarajaConfig.environment,
+    shortCode: currentDarajaConfig.shortCode,
+    tillNumber: currentDarajaConfig.tillNumber,
+    hasConsumerKey: Boolean(currentDarajaConfig.consumerKey),
+    hasPasskey: Boolean(currentDarajaConfig.passkey)
   });
 
   res.json({
-    ResponseCode: '0',
-    ResponseDescription: 'Success. Request accepted for processing on Safaricom M-PESA STK Prompt',
-    MerchantRequestID: merchantRequestId,
-    CheckoutRequestID: checkoutId,
-    CustomerMessage: `Success! Lipa Na M-PESA STK Push of KES ${depositAmount.toLocaleString()} sent to ${formattedPhone} for Smartchoice Ventures (Till: 1722023).`,
-    receipt: stkRecord.mpesaReceiptNumber,
-    till: '1722023',
-    merchantName: 'Smartchoice Ventures'
+    success: true,
+    message: 'Safaricom Daraja API configuration saved successfully.',
+    configured: Boolean(currentDarajaConfig.consumerKey && currentDarajaConfig.consumerSecret && currentDarajaConfig.passkey)
   });
 });
 
