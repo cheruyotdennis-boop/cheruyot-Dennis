@@ -4,6 +4,7 @@ import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import nodemailer from 'nodemailer';
+import cryptoDepositHandler from './api/crypto-deposit.js';
 
 const app = express();
 const PORT = 3000;
@@ -1041,6 +1042,11 @@ async function verifyBtcOnChainTx(txHash: string) {
     return { valid: false, error: 'Failed to connect to Bitcoin explorer' };
   }
 }
+
+// Vercel Serverless Route Handler
+app.all(['/api/crypto-deposit', '/api/crypto-deposit.js'], (req: Request, res: Response) => {
+  return cryptoDepositHandler(req, res);
+});
 
 app.post('/api/wallet/verify-tx', async (req: Request, res: Response) => {
   const { txHash, currency } = req.body;
