@@ -247,6 +247,29 @@ export const api = {
     }
   },
 
+  // Verify Blockchain Transaction
+  async verifyBlockchainTx(txHash: string, currency: string): Promise<{
+    success: boolean;
+    valid?: boolean;
+    confirmed?: boolean;
+    blockNumber?: number;
+    blockHeight?: number;
+    explorerUrl?: string;
+    message?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/wallet/verify-tx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txHash, currency })
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error verifying blockchain transaction' };
+    }
+  },
+
   // Wallet: Process Deposit
   async deposit(params: {
     email?: string;
@@ -257,7 +280,8 @@ export const api = {
     txHash?: string;
     customerName?: string;
     phone?: string;
-  }): Promise<{ success: boolean; message?: string; transaction?: any; availableBalanceKES?: number; receiptNumber?: string; error?: string }> {
+    isWeb3Direct?: boolean;
+  }): Promise<{ success: boolean; message?: string; transaction?: any; availableBalanceKES?: number; receiptNumber?: string; explorerUrl?: string; error?: string }> {
     try {
       const res = await fetch('/api/wallet/deposit', {
         method: 'POST',

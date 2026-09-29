@@ -223,8 +223,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         kycStatus: 'Verified',
         avatar: selectedAvatar,
         twoFactorEnabled: true,
-        walletAddressUSDT: '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff',
-        walletAddressBTC: '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU',
+        walletAddressUSDT: '',
+        walletAddressBTC: '',
         firstDepositTime: new Date().toISOString(),
         lastDepositTime: new Date().toISOString()
       };
@@ -304,8 +304,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           kycStatus: 'Verified',
           avatar: AVATAR_PRESETS[0],
           twoFactorEnabled: true,
-          walletAddressUSDT: '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff',
-          walletAddressBTC: '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU',
+          walletAddressUSDT: '',
+          walletAddressBTC: '',
           firstDepositTime: new Date().toISOString(),
           lastDepositTime: new Date().toISOString()
         };

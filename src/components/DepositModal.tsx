@@ -13,7 +13,11 @@ import {
   ArrowRightLeft, 
   ExternalLink, 
   Info,
-  Sparkles
+  Sparkles,
+  AlertCircle,
+  Loader2,
+  Zap,
+  Globe
 } from 'lucide-react';
 import { triggerConfetti } from '../utils/confetti';
 import { safeCopyText } from '../utils/storage';
@@ -37,39 +41,49 @@ export const DepositModal: React.FC<DepositModalProps> = ({
   contacts,
   user
 }) => {
-  const [selectedAsset, setSelectedAsset] = useState<'KES_MPESA' | 'USDT_BEP20' | 'BTC'>('USDT_BEP20');
+  const [selectedAsset, setSelectedAsset] = useState<'USDT_BEP20' | 'BTC' | 'KES_MPESA'>('USDT_BEP20');
   const [depositAmountKES, setDepositAmountKES] = useState<number>(13000);
   const [senderWalletAddress, setSenderWalletAddress] = useState<string>('');
   const [txHashInput, setTxHashInput] = useState<string>('');
   const [copiedAddress, setCopiedAddress] = useState<boolean>(false);
-  const [showQrCode, setShowQrCode] = useState<boolean>(false);
+  const [showQrCode, setShowQrCode] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isWeb3Connecting, setIsWeb3Connecting] = useState<boolean>(false);
   const [successStep, setSuccessStep] = useState<boolean>(false);
   const [lastReceipt, setLastReceipt] = useState<string>('');
+  const [lastExplorerUrl, setLastExplorerUrl] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [txVerificationStatus, setTxVerificationStatus] = useState<string>('');
 
   if (!isOpen) return null;
 
   const exchangeRate = contacts?.kesUsdExchangeRate || 130.00; // 1 USD = 130 KES
   const btcRateKES = 12480000;
 
-  // Receiving Deposit Addresses (Two official customer deposit addresses: USDT BEP-20 and BTC)
-  const depositAddresses: Record<string, { address: string; network: string; memo?: string }> = {
-    KES_MPESA: {
-      address: `Till 1722023 (Smartchoice Ventures)`,
-      network: 'Safaricom M-PESA Buy Goods Till'
-    },
+  // Master Receiving Vault Addresses (Real Owner Addresses)
+  const depositAddresses: Record<string, { address: string; network: string; explorerUrl: string; memo?: string }> = {
     USDT_BEP20: {
       address: contacts?.cryptoDepositWallets?.usdtBep20 || '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff',
-      network: 'BNB Smart Chain (BEP-20)'
+      network: 'BNB Smart Chain (BEP-20)',
+      explorerUrl: `https://bscscan.com/address/${contacts?.cryptoDepositWallets?.usdtBep20 || '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff'}`
     },
     BTC: {
       address: contacts?.cryptoDepositWallets?.btc || '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU',
-      network: 'Bitcoin Native (BTC)'
+      network: 'Bitcoin Native (BTC)',
+      explorerUrl: `https://blockstream.info/address/${contacts?.cryptoDepositWallets?.btc || '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU'}`
+    },
+    KES_MPESA: {
+      address: 'Till 1722023 (Smartchoice Ventures)',
+      network: 'Safaricom M-PESA Buy Goods Till',
+      explorerUrl: ''
     }
   };
 
   const activeAssetInfo = depositAddresses[selectedAsset] || depositAddresses.USDT_BEP20;
   const activeAddress = activeAssetInfo.address;
+
+  // Real Scannable QR Code URL
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=280x280&margin=10&data=${encodeURIComponent(activeAddress)}`;
 
   // Calculate crypto equivalent
   const getCryptoEquivalent = () => {
@@ -90,54 +104,172 @@ export const DepositModal: React.FC<DepositModalProps> = ({
     setTimeout(() => setCopiedAddress(false), 2000);
   };
 
-  const handleExecuteDeposit = async () => {
-    if (depositAmountKES <= 0) return;
+  // 1. Direct Web3 Transfer via MetaMask / Trust Wallet (Real on-chain transfer to 0xbcf65f39cd5868e8ac571c6d929255dd587f9bff)
+  const handleWeb3DirectTransfer = async () => {
+    setErrorMessage('');
+    if (typeof window === 'undefined' || !(window as any).ethereum) {
+      setErrorMessage('No Web3 wallet detected in browser. Please open in MetaMask, Trust Wallet, or transfer manually from Binance/Bybit.');
+      return;
+    }
 
-    setIsProcessing(true);
-
-    const curr = selectedAsset === 'KES_MPESA' 
-      ? 'KES' 
-      : selectedAsset.includes('USDT') 
-        ? 'USDT' 
-        : selectedAsset === 'BTC' 
-          ? 'BTC' 
-          : 'ETH';
-
-    const generatedHash = txHashInput.trim() || (selectedAsset === 'KES_MPESA'
-      ? `QK${Math.floor(10000000 + Math.random() * 90000000)}`
-      : `0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`);
-
-    const methodLabel = selectedAsset === 'KES_MPESA'
-      ? 'M-PESA Instant Deposit'
-      : `Crypto Deposit (${activeAssetInfo.network})${senderWalletAddress.trim() ? ` from ${senderWalletAddress.slice(0, 6)}...${senderWalletAddress.slice(-4)}` : ''}`;
+    setIsWeb3Connecting(true);
 
     try {
-      // Direct call to backend server
+      const ethereum = (window as any).ethereum;
+      
+      // Request account access
+      const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+      if (!accounts || accounts.length === 0) {
+        setErrorMessage('Wallet connection declined.');
+        setIsWeb3Connecting(false);
+        return;
+      }
+      const userAddress = accounts[0];
+
+      // Ensure network is BSC (Chain ID 0x38 = 56)
+      try {
+        await ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x38' }]
+        });
+      } catch (switchError: any) {
+        if (switchError.code === 4902) {
+          await ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x38',
+              chainName: 'BNB Smart Chain Mainnet',
+              nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+              rpcUrls: ['https://bsc-dataseed.binance.org/'],
+              blockExplorerUrls: ['https://bscscan.com']
+            }]
+          });
+        } else {
+          throw switchError;
+        }
+      }
+
+      // USDT BEP-20 Contract on BSC: 0x55d398326f99059fF775485246999027B3197955
+      const usdtContract = '0x55d398326f99059fF775485246999027B3197955';
+      const usdtAmount = depositAmountKES / exchangeRate;
+      
+      // transfer(address to, uint256 amount)
+      // Function signature: 0xa9059cbb
+      const targetAddress = activeAddress.toLowerCase().replace('0x', '').padStart(64, '0');
+      // USDT has 18 decimals on BSC
+      const amountHex = BigInt(Math.floor(usdtAmount * 1e18)).toString(16).padStart(64, '0');
+      const dataPayload = `0xa9059cbb${targetAddress}${amountHex}`;
+
+      // Prompt user to sign and broadcast transaction
+      const txHash = await ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: userAddress,
+          to: usdtContract,
+          data: dataPayload,
+          value: '0x0'
+        }]
+      });
+
+      if (!txHash) {
+        throw new Error('Transaction was cancelled or declined.');
+      }
+
+      const explorerLink = `https://bscscan.com/tx/${txHash}`;
+      setLastExplorerUrl(explorerLink);
+      setLastReceipt(txHash);
+
+      // Call backend to credit wallet
+      const res = await api.deposit({
+        email: user?.email,
+        userId: user?.id,
+        amountKES: depositAmountKES,
+        currency: 'USDT',
+        method: `Web3 Direct Transfer (BSC) from ${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`,
+        txHash,
+        customerName: user?.fullName,
+        phone: user?.phone || user?.mpesaNumber,
+        isWeb3Direct: true
+      });
+
+      setIsWeb3Connecting(false);
+      if (res.success) {
+        setSuccessStep(true);
+        triggerConfetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+        onConfirmDeposit(depositAmountKES, 'USDT', txHash, 'Web3 Direct Transfer (BSC)');
+      } else {
+        setErrorMessage(res.error || 'Failed to record deposit');
+      }
+    } catch (err: any) {
+      setIsWeb3Connecting(false);
+      setErrorMessage(err?.message || 'Web3 transaction failed or was rejected in wallet.');
+    }
+  };
+
+  // 2. Manual Blockchain Transfer Verification (from Binance, Bybit, Trust Wallet app)
+  const handleVerifyManualTx = async () => {
+    setErrorMessage('');
+    const cleanHash = txHashInput.trim();
+
+    if (!cleanHash) {
+      setErrorMessage('Please enter the blockchain Transaction Hash (TxID) from your wallet or exchange transfer.');
+      return;
+    }
+
+    if (selectedAsset === 'USDT_BEP20' && (!cleanHash.startsWith('0x') || cleanHash.length !== 66)) {
+      setErrorMessage('Invalid BSC transaction hash. A valid BEP-20 hash starts with 0x and is 66 characters long.');
+      return;
+    }
+
+    if (selectedAsset === 'BTC' && cleanHash.length !== 64) {
+      setErrorMessage('Invalid Bitcoin transaction hash. A valid Bitcoin TxID is 64 hexadecimal characters.');
+      return;
+    }
+
+    setIsProcessing(true);
+    setTxVerificationStatus('Connecting to blockchain RPC to verify on-chain transaction...');
+
+    try {
+      const curr = selectedAsset === 'BTC' ? 'BTC' : 'USDT';
+      
+      // Verify with blockchain node
+      const verifyRes = await api.verifyBlockchainTx(cleanHash, curr);
+      if (!verifyRes.success) {
+        setIsProcessing(false);
+        setErrorMessage(verifyRes.error || 'Could not verify blockchain transaction.');
+        return;
+      }
+
+      const explorerLink = verifyRes.explorerUrl || (
+        curr === 'BTC' ? `https://blockstream.info/tx/${cleanHash}` : `https://bscscan.com/tx/${cleanHash}`
+      );
+      setLastExplorerUrl(explorerLink);
+
+      // Submit verified deposit to backend
       const res = await api.deposit({
         email: user?.email,
         userId: user?.id,
         amountKES: depositAmountKES,
         currency: curr,
-        method: methodLabel,
-        txHash: generatedHash,
+        method: `Blockchain Transfer (${activeAssetInfo.network})${senderWalletAddress.trim() ? ` from ${senderWalletAddress.slice(0, 6)}...${senderWalletAddress.slice(-4)}` : ''}`,
+        txHash: cleanHash,
         customerName: user?.fullName,
         phone: user?.phone || user?.mpesaNumber
       });
 
-      const finalReceipt = res?.receiptNumber || generatedHash;
-      setLastReceipt(finalReceipt);
       setIsProcessing(false);
-      setSuccessStep(true);
-      triggerConfetti({ particleCount: 90, spread: 75, origin: { y: 0.6 } });
 
-      // Immediate parent balance update
-      onConfirmDeposit(depositAmountKES, curr as any, finalReceipt, methodLabel);
-    } catch {
-      setLastReceipt(generatedHash);
+      if (res.success) {
+        setLastReceipt(cleanHash);
+        setSuccessStep(true);
+        triggerConfetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+        onConfirmDeposit(depositAmountKES, curr as any, cleanHash, activeAssetInfo.network);
+      } else {
+        setErrorMessage(res.error || 'Failed to register blockchain transaction.');
+      }
+    } catch (err: any) {
       setIsProcessing(false);
-      setSuccessStep(true);
-      triggerConfetti({ particleCount: 90, spread: 75, origin: { y: 0.6 } });
-      onConfirmDeposit(depositAmountKES, curr as any, generatedHash, methodLabel);
+      setErrorMessage(err?.message || 'Network error verifying blockchain transaction.');
     }
   };
 
@@ -145,8 +277,6 @@ export const DepositModal: React.FC<DepositModalProps> = ({
     setSuccessStep(false);
     onClose();
   };
-
-  const isOwnerAdmin = Boolean(user?.isAdmin || user?.role === 'admin' || user?.role === 'superadmin' || user?.email?.toLowerCase() === 'admin@quantiqprime.com' || user?.email?.toLowerCase() === 'cheruyot.dennis@student.moringaschool.com');
 
   return (
     <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 overflow-y-auto p-3 sm:p-4 md:p-6 flex items-center justify-center">
@@ -159,8 +289,13 @@ export const DepositModal: React.FC<DepositModalProps> = ({
               <ArrowDownLeft className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold font-heading uppercase tracking-wide">Deposit Investment Capital</h2>
-              <p className="text-xs text-slate-400">Direct settlement via Personal Crypto Wallet or M-PESA</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold font-heading uppercase tracking-wide">Deposit Investment Capital</h2>
+                <span className="text-[10px] font-black bg-emerald-950 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 uppercase tracking-wider">
+                  Live Vault
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">Direct On-Chain Blockchain Settlement & M-PESA Till</p>
             </div>
           </div>
 
@@ -184,7 +319,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
 
               <div>
                 <span className="text-[11px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950/60 border border-emerald-500/40 px-3 py-1 rounded-none inline-block mb-2">
-                  ✓ Deposit Successful & Credited
+                  ✓ On-Chain Deposit Confirmed
                 </span>
                 <h3 className="text-2xl font-black text-white font-heading">
                   Ksh {depositAmountKES.toLocaleString()}
@@ -194,23 +329,37 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                 </p>
               </div>
 
-              <div className="p-4 bg-[#080808] border border-slate-800 rounded-none text-left space-y-2 max-w-sm mx-auto font-mono text-xs">
+              <div className="p-4 bg-[#080808] border border-slate-800 rounded-none text-left space-y-2.5 max-w-sm mx-auto font-mono text-xs">
                 <div className="flex justify-between items-center text-slate-400">
-                  <span>Payment Rail:</span>
+                  <span>Network:</span>
                   <span className="text-white font-bold">{activeAssetInfo.network}</span>
                 </div>
                 <div className="flex justify-between items-center text-slate-400">
-                  <span>Receipt / TxID:</span>
-                  <span className="text-amber-400 font-bold truncate max-w-[180px]">{lastReceipt}</span>
+                  <span>Receiving Vault:</span>
+                  <span className="text-amber-300 font-bold truncate max-w-[180px]">{activeAddress}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>TxID / Hash:</span>
+                  <span className="text-emerald-400 font-bold truncate max-w-[180px]">{lastReceipt}</span>
                 </div>
                 <div className="flex justify-between items-center text-slate-400">
                   <span>Status:</span>
-                  <span className="text-emerald-400 font-bold">COMPLETED</span>
+                  <span className="text-emerald-400 font-bold">ON-CHAIN CONFIRMED</span>
                 </div>
-                <div className="flex justify-between items-center text-slate-400">
-                  <span>Wallet Balance:</span>
-                  <span className="text-emerald-400 font-bold">Instantly Updated</span>
-                </div>
+
+                {lastExplorerUrl && (
+                  <div className="pt-2 border-t border-slate-800">
+                    <a
+                      href={lastExplorerUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-400 hover:text-amber-300 underline flex items-center gap-1.5 text-[11px]"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>View Transaction on Blockchain Explorer</span>
+                    </a>
+                  </div>
+                )}
               </div>
 
               <div className="pt-2">
@@ -225,42 +374,30 @@ export const DepositModal: React.FC<DepositModalProps> = ({
             </div>
           ) : (
             <>
-              {/* M-PESA Direct STK banner */}
-              {onOpenMpesa && (
-                <div className="p-3 bg-[#080808] border border-emerald-500/50 rounded-none flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <Smartphone className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <div>
-                      <div className="font-bold text-white uppercase tracking-wider">Kenya Lipa Na M-PESA Direct STK</div>
-                      <div className="text-[11px] text-emerald-300">Instant Phone PIN Prompt • Auto-Credited</div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onOpenMpesa();
-                    }}
-                    className="bg-emerald-500 hover:bg-emerald-400 text-black font-black px-3.5 py-1.5 rounded-none cursor-pointer shrink-0 uppercase tracking-wider text-[11px]"
-                  >
-                    M-PESA Menu
-                  </button>
+              {/* Error Message */}
+              {errorMessage && (
+                <div className="p-3 bg-rose-950/80 border border-rose-500/40 text-rose-200 rounded-none flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <span className="leading-snug">{errorMessage}</span>
                 </div>
               )}
 
-              {/* Network Selector */}
+              {/* Payment Rail Selector */}
               <div>
                 <label className="block font-bold text-slate-300 mb-2 uppercase tracking-wider text-[11px]">Select Payment Rail</label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {[
                     { id: 'USDT_BEP20', label: 'USDT (BEP-20)', sub: 'BNB Smart Chain • Low Fee', icon: '⚡' },
                     { id: 'BTC', label: 'Bitcoin (BTC)', sub: 'Native Bitcoin Network', icon: '₿' },
-                    { id: 'KES_MPESA', label: 'M-PESA (KES)', sub: 'Direct Safaricom STK', icon: '📱' }
+                    { id: 'KES_MPESA', label: 'M-PESA (KES)', sub: 'Buy Goods Till 1722023', icon: '📱' }
                   ].map((coin) => (
                     <button
                       key={coin.id}
                       type="button"
-                      onClick={() => setSelectedAsset(coin.id as any)}
+                      onClick={() => {
+                        setSelectedAsset(coin.id as any);
+                        setErrorMessage('');
+                      }}
                       className={`p-2.5 rounded-none border text-left transition-all cursor-pointer ${
                         selectedAsset === coin.id
                           ? 'bg-amber-500 text-black font-black border-amber-400 shadow-md'
@@ -318,131 +455,191 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                 </div>
               </div>
 
-              {/* Deposit Vault Address Box */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="font-bold text-slate-300 uppercase tracking-wider text-[11px]">
-                    Official Vault Address ({activeAssetInfo.network})
-                  </label>
+              {/* SPECIAL M-PESA ROUTING */}
+              {selectedAsset === 'KES_MPESA' ? (
+                <div className="p-4 bg-[#080808] border border-emerald-500/50 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-emerald-400 font-bold flex items-center gap-1.5 text-xs uppercase tracking-wider">
+                      <Smartphone className="w-4 h-4" />
+                      <span>Lipa Na M-PESA Till 1722023</span>
+                    </span>
+                    <span className="text-[10px] font-mono font-black bg-emerald-500 text-black px-2 py-0.5">
+                      SMARTCHOICE VENTURES
+                    </span>
+                  </div>
+
+                  <p className="text-slate-300 text-xs">
+                    To deposit via M-PESA directly to <b>Till 1722023</b> or receive an STK Push prompt on your handset, please use the dedicated M-PESA gateway:
+                  </p>
+
                   <button
                     type="button"
-                    onClick={() => setShowQrCode(!showQrCode)}
-                    className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-bold cursor-pointer"
+                    onClick={() => {
+                      onClose();
+                      if (onOpenMpesa) onOpenMpesa();
+                    }}
+                    className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-wider text-xs cursor-pointer flex items-center justify-center gap-2"
                   >
-                    <QrCode className="w-3.5 h-3.5" />
-                    <span>{showQrCode ? 'Hide QR Code' : 'Show QR Code'}</span>
+                    <Smartphone className="w-4 h-4" />
+                    <span>Open Lipa Na M-PESA Gateway &rarr;</span>
                   </button>
                 </div>
-
-                <div className="flex items-center gap-2 bg-black border border-slate-700 p-2.5 rounded-none">
-                  <span className="font-mono text-amber-300 text-[11px] break-all flex-1 pl-1">
-                    {activeAddress}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleCopy}
-                    className="bg-[#111] hover:bg-[#222] border border-slate-700 text-white px-3 py-1.5 rounded-none font-bold flex items-center gap-1 cursor-pointer shrink-0 transition-all active:scale-95"
-                  >
-                    {copiedAddress ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedAddress ? 'Copied' : 'Copy'}</span>
-                  </button>
-                </div>
-
-                {/* QR Code Display Modal / Box */}
-                {showQrCode && (
-                  <div className="p-4 bg-black border border-amber-500/40 rounded-none flex flex-col items-center justify-center text-center space-y-2">
-                    <div className="p-3 bg-white rounded-none shadow-inner inline-block">
-                      <div className="w-36 h-36 bg-black p-2 rounded-none flex flex-col justify-between items-center relative overflow-hidden">
-                        <div className="grid grid-cols-6 gap-1 w-full h-full opacity-90">
-                          {Array.from({ length: 36 }).map((_, i) => (
-                            <div 
-                              key={i} 
-                              className={`rounded-none ${
-                                (i % 2 === 0 && i % 3 === 0) || i === 0 || i === 5 || i === 30 || i === 35 
-                                  ? 'bg-amber-400' 
-                                  : i % 5 === 0 
-                                    ? 'bg-amber-200' 
-                                    : 'bg-slate-800'
-                              }`}
-                            />
-                          ))}
-                        </div>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="bg-black p-1.5 rounded-none border border-amber-400">
-                            <Wallet className="w-5 h-5 text-amber-400" />
-                          </div>
-                        </div>
+              ) : (
+                <>
+                  {/* REAL VAULT ADDRESS BOX WITH EXPLORER LINK */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-slate-300 uppercase tracking-wider text-[11px] flex items-center gap-1">
+                        <span>Receiving Vault ({activeAssetInfo.network})</span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        {activeAssetInfo.explorerUrl && (
+                          <a
+                            href={activeAssetInfo.explorerUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-bold underline"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Verify on Explorer</span>
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowQrCode(!showQrCode)}
+                          className="text-[11px] text-slate-300 hover:text-white flex items-center gap-1 font-bold cursor-pointer"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>{showQrCode ? 'Hide QR' : 'Show QR'}</span>
+                        </button>
                       </div>
                     </div>
-                    <div className="text-[10px] text-slate-400">
-                      Scan from your personal crypto wallet app (Trust Wallet, Binance, Bybit, Metamask)
+
+                    <div className="flex items-center gap-2 bg-black border border-amber-500/40 p-2.5 rounded-none">
+                      <span className="font-mono text-amber-300 text-[11px] break-all flex-1 pl-1 font-bold">
+                        {activeAddress}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCopy}
+                        className="bg-amber-500 hover:bg-amber-400 text-black px-3 py-1.5 rounded-none font-black flex items-center gap-1 cursor-pointer shrink-0 transition-all active:scale-95 text-xs uppercase"
+                      >
+                        {copiedAddress ? <Check className="w-3.5 h-3.5 text-black" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedAddress ? 'Copied' : 'Copy'}</span>
+                      </button>
                     </div>
-                  </div>
-                )}
-              </div>
 
-              {/* Personal Wallet / Sender TxID details */}
-              <div className="space-y-2 pt-1 border-t border-slate-800">
-                <div className="flex items-center gap-1.5 text-slate-300 font-bold uppercase tracking-wider text-[11px]">
-                  <Wallet className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Your Personal Wallet / Deposit Reference</span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      Your Sender Wallet Address (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. TY7Q6B... or 0x89aF..."
-                      value={senderWalletAddress}
-                      onChange={(e) => setSenderWalletAddress(e.target.value)}
-                      className="w-full px-3 py-2 bg-black border border-slate-800 rounded-none text-amber-300 font-mono text-[11px] focus:outline-none focus:border-amber-500"
-                    />
+                    {/* REAL HIGH-RESOLUTION SCANNABLE QR CODE */}
+                    {showQrCode && (
+                      <div className="p-4 bg-[#0a0a0a] border border-amber-500/30 rounded-none flex flex-col items-center justify-center text-center space-y-2.5">
+                        <div className="p-2.5 bg-white rounded-none shadow-lg inline-block">
+                          <img 
+                            src={qrCodeUrl} 
+                            alt={`Deposit QR Code for ${activeAddress}`} 
+                            className="w-44 h-44 block mx-auto object-contain"
+                          />
+                        </div>
+                        <div className="text-[11px] text-slate-300 font-mono">
+                          Point your <b>Trust Wallet</b>, <b>Binance</b>, <b>Bybit</b>, or <b>Metamask</b> camera to scan this exact receiving vault.
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      Transaction Hash / TxID (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Paste blockchain tx hash"
-                      value={txHashInput}
-                      onChange={(e) => setTxHashInput(e.target.value)}
-                      className="w-full px-3 py-2 bg-black border border-slate-800 rounded-none text-slate-200 font-mono text-[11px] focus:outline-none focus:border-amber-500"
-                    />
+                  {/* METHOD 1: DIRECT WEB3 WALLET TRANSFER (FOR USDT BEP-20) */}
+                  {selectedAsset === 'USDT_BEP20' && (
+                    <div className="p-3 bg-gradient-to-r from-amber-950/40 via-black to-amber-950/40 border border-amber-500/50 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-amber-400 font-bold flex items-center gap-1 text-xs uppercase tracking-wider">
+                          <Zap className="w-4 h-4 text-amber-400" />
+                          <span>Method 1: Direct Web3 Wallet Transfer</span>
+                        </span>
+                        <span className="text-[10px] font-mono text-emerald-400 font-bold">1-Click Sign</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300">
+                        Transfer <b>{getCryptoEquivalent()}</b> directly from your connected browser wallet (MetaMask, Trust Wallet, Binance Wallet). It automatically calls the official BSC USDT contract to transfer to your vault.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={isWeb3Connecting}
+                        onClick={handleWeb3DirectTransfer}
+                        className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-black font-black uppercase tracking-wider text-xs cursor-pointer flex items-center justify-center gap-2 shadow-lg"
+                      >
+                        {isWeb3Connecting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin text-black" />
+                            <span>Connecting & Awaiting Wallet Signature...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Wallet className="w-4 h-4" />
+                            <span>Send {getCryptoEquivalent()} via Web3 Wallet</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* METHOD 2: MANUAL TRANSFER (BINANCE, BYBIT, TRUST WALLET MOBILE) */}
+                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-200 font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Method 2: Manual Transfer & Blockchain Verification</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">From Binance/Bybit</span>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-[10px] text-slate-300 uppercase tracking-wider mb-1 font-bold">
+                          Blockchain Transaction Hash / TxID *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          placeholder={selectedAsset === 'BTC' ? 'Paste 64-character Bitcoin TxID' : 'Paste 66-character BSC TxID (starts with 0x...)'}
+                          value={txHashInput}
+                          onChange={(e) => setTxHashInput(e.target.value)}
+                          className="w-full px-3 py-2 bg-black border border-slate-700 rounded-none text-amber-300 font-mono text-[11px] focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                          Sender Wallet Address (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 0x... or bc1q..."
+                          value={senderWalletAddress}
+                          onChange={(e) => setSenderWalletAddress(e.target.value)}
+                          className="w-full px-3 py-2 bg-black border border-slate-800 rounded-none text-slate-300 font-mono text-[11px] focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isProcessing || depositAmountKES <= 0}
+                      onClick={handleVerifyManualTx}
+                      className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-wider cursor-pointer flex items-center justify-center gap-2 shadow-lg transition-all"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>Verifying On-Chain via Blockchain Node...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Verify On-Chain & Credit Balance</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                </div>
-
-                <div className="p-2.5 rounded-none bg-[#080808] border border-amber-500/30 text-[11px] text-slate-300 flex items-start gap-2">
-                  <Info className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                  <span>
-                    You can deposit from <b>any personal wallet</b> (Trust Wallet, Binance, Bybit, Metamask, OKX, TronLink). After transferring, click Confirm below to credit your account immediately.
-                  </span>
-                </div>
-              </div>
-
-              {/* Admin Vault Note */}
-              {isOwnerAdmin && (
-                <div className="p-2.5 rounded-none bg-[#080808] border border-amber-500/40 text-[10px] text-amber-300 flex items-center justify-between">
-                  <span>👑 <b>Admin Note:</b> This deposit address is the platform receiving vault configured in Admin Contacts.</span>
-                </div>
+                </>
               )}
-
-              {/* Action Button */}
-              <div className="pt-2">
-                <button
-                  type="button"
-                  disabled={isProcessing || depositAmountKES <= 0}
-                  onClick={handleExecuteDeposit}
-                  className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-3 rounded-none shadow-lg transition-all cursor-pointer uppercase tracking-wider text-xs flex items-center justify-center gap-2 active:scale-98"
-                >
-                  <Coins className="w-4 h-4" />
-                  <span>{isProcessing ? 'Processing & Crediting Balance...' : `Confirm Deposit of ${getCryptoEquivalent()} (Ksh ${depositAmountKES.toLocaleString()})`}</span>
-                </button>
-              </div>
             </>
           )}
 
@@ -452,5 +649,3 @@ export const DepositModal: React.FC<DepositModalProps> = ({
     </div>
   );
 };
-
-

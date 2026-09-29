@@ -74,11 +74,11 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({
     setNetwork(rail);
     setErrorMessage('');
     if (rail === 'MPESA') {
-      setDestinationAddress(user.mpesaNumber || user.phone || '0712345678');
+      setDestinationAddress(user.mpesaNumber || user.phone || '');
     } else if (rail === 'BEP20') {
-      setDestinationAddress(user.walletAddressUSDT || '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff');
+      setDestinationAddress(user.walletAddressUSDT && user.walletAddressUSDT !== '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff' ? user.walletAddressUSDT : '');
     } else if (rail === 'BTC') {
-      setDestinationAddress(user.walletAddressBTC || '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU');
+      setDestinationAddress(user.walletAddressBTC && user.walletAddressBTC !== '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU' ? user.walletAddressBTC : '');
     }
   };
 
@@ -90,7 +90,13 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({
       return;
     }
 
-    const cleanDest = destinationAddress.trim() || (network === 'MPESA' ? (user.mpesaNumber || user.phone || '0712345678') : '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff');
+    const cleanDest = destinationAddress.trim();
+    if (!cleanDest) {
+      setErrorMessage(network === 'MPESA' 
+        ? 'Please enter your personal Safaricom M-PESA phone number to receive payment.' 
+        : `Please enter your personal ${network === 'BEP20' ? 'USDT (BEP-20)' : 'Bitcoin'} receiving wallet address.`);
+      return;
+    }
 
     setIsProcessing(true);
 

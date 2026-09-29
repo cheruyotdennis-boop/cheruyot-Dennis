@@ -136,8 +136,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               kycStatus: 'Verified',
               avatar: 'luxury',
               twoFactorEnabled: true,
-              walletAddressUSDT: '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff',
-              walletAddressBTC: '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU'
+              walletAddressUSDT: '',
+              walletAddressBTC: ''
             });
           }
         }
@@ -165,8 +165,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           kycStatus: 'Verified',
           avatar: 'luxury',
           twoFactorEnabled: true,
-          walletAddressUSDT: '0xbcf65f39cd5868e8ac571c6d929255dd587f9bff',
-          walletAddressBTC: '1KSxkSS6XQsyYfefsTK7xSMrnFxDfGwsGU'
+          walletAddressUSDT: '',
+          walletAddressBTC: ''
         });
         setSuccessLogin(false);
         onClose();
