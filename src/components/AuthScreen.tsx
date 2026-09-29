@@ -93,7 +93,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [resendCooldown, setResendCooldown] = useState(0);
   const [codeNotice, setCodeNotice] = useState('');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
-  const [smsDeliveryAlert, setSmsDeliveryAlert] = useState<{ channel: string; dest: string; code: string } | null>(null);
+  const [smsDeliveryAlert, setSmsDeliveryAlert] = useState<{ channel: string; dest: string } | null>(null);
 
   // Resend cooldown timer
   useEffect(() => {
@@ -122,11 +122,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         setResendCooldown(60);
         setCodeNotice(`2FA code dispatched to ${targetDest}. Please check your ${targetType === 'phone' ? 'SMS inbox' : 'Email'} and enter the 6-digit code below.`);
 
-        if (res?.otp) {
+        if (res?.success) {
           setSmsDeliveryAlert({
             channel: targetType === 'phone' ? 'Safaricom SMS (+254)' : 'Security Email Relay',
-            dest: targetDest,
-            code: res.otp
+            dest: targetDest
           });
         }
         return true;
@@ -435,13 +434,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
                     {smsDeliveryAlert.channel}
                   </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Incoming Notice</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Dispatched</span>
                 </div>
                 <p className="text-xs text-slate-200 mt-1">
-                  Your Quantiq Prime 2FA verification code is: <b className="text-amber-300 font-mono text-base tracking-widest bg-black/60 px-2 py-0.5 border border-amber-500/40 rounded">{smsDeliveryAlert.code}</b>
+                  A 6-digit security code has been dispatched to <b className="text-emerald-300 font-mono">{smsDeliveryAlert.dest}</b>. Please check your SMS inbox or email and enter the code below.
                 </p>
                 <div className="text-[10px] text-slate-400 font-mono mt-1">
-                  Dispatched to {smsDeliveryAlert.dest} &bull; Valid for 10 minutes
+                  Valid for 10 minutes &bull; Standard carrier rates may apply
                 </div>
               </div>
             </div>

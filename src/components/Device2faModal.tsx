@@ -181,43 +181,35 @@ export const Device2faModal: React.FC<Device2faModalProps> = ({
   return (
     <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
       
-      {/* Real-time SMS / Email Security Dispatch */}
+      {/* Real-time SMS / Email Security Dispatch Notice */}
       {showNotificationToast && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-3 animate-in slide-in-from-top-4 duration-300">
-          <div className="bg-slate-900/95 border border-amber-500/50 rounded-2xl p-3.5 shadow-2xl backdrop-blur-xl text-white flex items-start justify-between gap-3">
+          <div className="bg-slate-900/95 border border-emerald-500/50 rounded-2xl p-3.5 shadow-2xl backdrop-blur-xl text-white flex items-start justify-between gap-3">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 shrink-0 mt-0.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
                 {deliveryChannel === 'phone' ? (
                   <Smartphone className="w-5 h-5 text-emerald-400 animate-pulse" />
                 ) : (
-                  <Mail className="w-5 h-5 text-amber-400 animate-pulse" />
+                  <Mail className="w-5 h-5 text-emerald-400 animate-pulse" />
                 )}
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-black text-amber-400">
-                    {deliveryChannel === 'phone' ? 'Safaricom SMS Dispatched' : 'Email Security Code Sent'}
+                  <span className="text-xs font-black text-emerald-400">
+                    {deliveryChannel === 'phone' ? 'Safaricom SMS Dispatched' : 'Email Security Code Dispatched'}
                   </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Just Now</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Dispatched</span>
                 </div>
-                <p className="text-xs text-slate-200 mt-0.5">
+                <p className="text-xs text-slate-300 mt-0.5">
                   {deliveryChannel === 'phone' 
-                    ? `Quantiq SMS to ${maskPhone(targetPhone)}: Your 2FA code is `
-                    : `Quantiq Email to ${maskEmail(targetEmail)}: Your 2FA code is `}
-                  <strong className="font-mono text-amber-300 text-sm tracking-wider">{currentCode}</strong>
+                    ? `Verification code dispatched to ${maskPhone(targetPhone)}. Please check your mobile phone SMS inbox.`
+                    : `Verification code dispatched to ${maskEmail(targetEmail)}. Please check your email inbox.`}
                 </p>
-                <button
-                  onClick={autoFillOtp}
-                  className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 px-2.5 py-1 rounded-lg transition-all cursor-pointer shadow"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span>1-Click Auto-Fill Code</span>
-                </button>
               </div>
             </div>
             <button
               onClick={() => setShowNotificationToast(false)}
-              className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+              className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>

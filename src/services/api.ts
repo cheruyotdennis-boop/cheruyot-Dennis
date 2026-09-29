@@ -146,6 +146,16 @@ export const api = {
     }
   },
 
+  // Check live M-PESA STK Push status
+  async checkStkStatus(checkoutId: string): Promise<{ success: boolean; record?: any; status?: string; mpesaReceiptNumber?: string; error?: string }> {
+    try {
+      const res = await fetch(`/api/mpesa/status/${encodeURIComponent(checkoutId)}`);
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error checking STK status' };
+    }
+  },
+
   // Verify M-PESA Till payment receipt code
   async verifyMpesaReceipt(params: {
     receiptNumber: string;

@@ -318,29 +318,63 @@ async function dispatchEmailOtp(toEmail: string, code: string) {
 async function dispatchSmsOtp(phoneNumber: string, code: string) {
   let cleanPhone = phoneNumber.replace(/[^0-9+]/g, '');
   if (cleanPhone.startsWith('0')) cleanPhone = '254' + cleanPhone.slice(1);
-  if (!cleanPhone.startsWith('+') && !cleanPhone.startsWith('254')) cleanPhone = '254' + cleanPhone;
+  if (!cleanPhone.startsWith('+')) cleanPhone = '+' + cleanPhone;
 
-  console.log(`[2FA SMS Dispatched] Code ${code} sent to Safaricom subscriber +${cleanPhone.replace('+', '')} via Daraja SMS rails.`);
+  console.log(`[2FA SMS Dispatched] Sending live 2FA code to Safaricom subscriber ${cleanPhone}`);
 
-  if (process.env.AFRICASTALKING_API_KEY) {
+  // 1. Africa's Talking (Standard East African SMS Gateway)
+  const atApiKey = process.env.AFRICASTALKING_API_KEY;
+  if (atApiKey) {
     try {
-      await fetch('https://api.africastalking.com/version1/messaging', {
+      const atRes = await fetch('https://api.africastalking.com/version1/messaging', {
         method: 'POST',
         headers: {
-          'apiKey': process.env.AFRICASTALKING_API_KEY,
+          'apiKey': atApiKey,
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json'
         },
         body: new URLSearchParams({
           username: process.env.AFRICASTALKING_USERNAME || 'sandbox',
-          to: cleanPhone.startsWith('+') ? cleanPhone : '+' + cleanPhone,
+          to: cleanPhone,
           message: `Your Quantiq Prime 2FA verification code is: ${code}. Valid for 10 minutes. Smartchoice Ventures.`
         })
       });
+      const atData = await atRes.json();
+      console.log(`[Africa's Talking SMS Dispatch Result]:`, atData);
+      return { success: true, provider: 'africastalking', data: atData };
     } catch (e: any) {
       console.error(`[Africa's Talking SMS Error]:`, e.message);
     }
   }
+
+  // 2. Twilio SMS
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+  const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+  if (twilioSid && twilioToken && twilioFrom) {
+    try {
+      const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
+      const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          To: cleanPhone,
+          From: twilioFrom,
+          Body: `Your Quantiq Prime 2FA verification code is: ${code}. Valid for 10 minutes.`
+        })
+      });
+      const twilioData = await twilioRes.json();
+      console.log(`[Twilio SMS Dispatch Result]:`, twilioData);
+      return { success: true, provider: 'twilio', data: twilioData };
+    } catch (e: any) {
+      console.error(`[Twilio SMS Error]:`, e.message);
+    }
+  }
+
+  return { success: false, error: 'SMS Gateway credentials not configured.' };
 }
 
 app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
@@ -356,7 +390,7 @@ app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
 
   otpStore.set(cleanDest.toLowerCase(), { code, expiresAt, channel: channelType });
 
-  console.log(`[2FA OTP Generated] Code ${code} for ${cleanDest} via ${channelType.toUpperCase()} (${purpose || 'verification'})`);
+  console.log(`[2FA OTP Generated] Confidential code dispatched for ${cleanDest} via ${channelType.toUpperCase()} (${purpose || 'verification'})`);
 
   // Asynchronously dispatch via real channel
   if (channelType === 'email') {
@@ -365,10 +399,10 @@ app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
     dispatchSmsOtp(cleanDest, code).catch(() => {});
   }
 
+  // Never return the OTP code in response - user must check their physical SMS/Email
   res.json({
     success: true,
-    message: `2FA security code sent to ${cleanDest} via ${channelType === 'phone' ? 'Safaricom SMS Gateway' : 'Email'}`,
-    otp: code,
+    message: `2FA security code sent to ${cleanDest} via ${channelType === 'phone' ? 'Safaricom SMS Gateway' : 'Email Relay'}`,
     destination: cleanDest,
     channel: channelType,
     expiresAt
@@ -787,7 +821,62 @@ app.post('/api/mpesa/config', (req: Request, res: Response) => {
   });
 });
 
-app.get('/api/mpesa/status/:checkoutId', (req: Request, res: Response) => {
+// Query Safaricom Daraja STK Push Status directly via Safaricom Query API
+async function queryDarajaStkStatus(checkoutId: string) {
+  const cfg = currentDarajaConfig;
+  if (!cfg.consumerKey.trim() || !cfg.consumerSecret.trim() || !cfg.passkey.trim()) {
+    return null;
+  }
+  const baseUrl = cfg.environment === 'production' 
+    ? 'https://api.safaricom.co.ke' 
+    : 'https://sandbox.safaricom.co.ke';
+
+  try {
+    const authHeader = Buffer.from(`${cfg.consumerKey.trim()}:${cfg.consumerSecret.trim()}`).toString('base64');
+    const tokenRes = await fetch(`${baseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
+      headers: { Authorization: `Basic ${authHeader}` }
+    });
+    if (!tokenRes.ok) return null;
+    const tokenData: any = await tokenRes.json();
+    const accessToken = tokenData.access_token;
+
+    const now = new Date();
+    const timestamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0')
+    ].join('');
+
+    const shortCode = cfg.shortCode.trim() || cfg.tillNumber.trim() || '1722023';
+    const password = Buffer.from(`${shortCode}${cfg.passkey.trim()}${timestamp}`).toString('base64');
+
+    const queryRes = await fetch(`${baseUrl}/mpesa/stkpushquery/v1/query`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        BusinessShortCode: shortCode,
+        Password: password,
+        Timestamp: timestamp,
+        CheckoutRequestID: checkoutId
+      })
+    });
+
+    const queryData: any = await queryRes.json();
+    console.log(`[Daraja STK Query Result for ${checkoutId}]:`, queryData);
+    return queryData;
+  } catch (err: any) {
+    console.error('[Daraja Query Error]:', err.message);
+    return null;
+  }
+}
+
+app.get('/api/mpesa/status/:checkoutId', async (req: Request, res: Response) => {
   const { checkoutId } = req.params;
   const record = stkTransactionsDB.get(checkoutId);
 
@@ -795,9 +884,39 @@ app.get('/api/mpesa/status/:checkoutId', (req: Request, res: Response) => {
     return res.status(404).json({ success: false, error: 'STK transaction reference not found' });
   }
 
+  // If still PENDING and Daraja credentials configured, actively query Safaricom
+  if (record.status === 'PENDING' && currentDarajaConfig.consumerKey.trim()) {
+    try {
+      const queryData = await queryDarajaStkStatus(checkoutId);
+      if (queryData) {
+        if (queryData.ResultCode === '0' || queryData.ResultCode === 0) {
+          record.status = 'COMPLETED';
+          const receipt = queryData.MpesaReceiptNumber || `QK${Math.floor(10000000 + Math.random() * 90000000)}`;
+          record.mpesaReceiptNumber = receipt;
+          stkTransactionsDB.set(checkoutId, record);
+
+          // Credit user wallet
+          const lookupKey = (record.customerName || '').toLowerCase().trim();
+          let profile = profilesDB.get(lookupKey);
+          if (profile) {
+            profile.availableBalanceKES = (profile.availableBalanceKES || 0) + record.amountKES;
+            profile.totalDepositedKES = (profile.totalDepositedKES || 0) + record.amountKES;
+          }
+        } else if (queryData.ResultCode === '1032' || queryData.ResultCode === '1037') {
+          record.status = 'FAILED';
+          stkTransactionsDB.set(checkoutId, record);
+        }
+      }
+    } catch (e: any) {
+      console.error('[STK Status Check Error]:', e?.message);
+    }
+  }
+
   res.json({
     success: true,
-    record
+    record,
+    status: record.status,
+    mpesaReceiptNumber: record.mpesaReceiptNumber
   });
 });
 
