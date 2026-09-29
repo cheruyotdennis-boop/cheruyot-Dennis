@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import nodemailer from 'nodemailer';
@@ -463,7 +464,30 @@ const defaultDarajaConfig: DarajaConfig = {
   environment: (process.env.DARAJA_ENV === 'production' || process.env.MPESA_ENV === 'production') ? 'production' : 'sandbox'
 };
 
-let currentDarajaConfig: DarajaConfig = { ...defaultDarajaConfig };
+const DARAJA_CONFIG_FILE = path.join(process.cwd(), 'data', 'daraja_config.json');
+
+function loadPersistedDarajaConfig(): DarajaConfig {
+  try {
+    if (fs.existsSync(DARAJA_CONFIG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DARAJA_CONFIG_FILE, 'utf-8'));
+      return { ...defaultDarajaConfig, ...data };
+    }
+  } catch (err) {
+    console.error('Failed to load persisted Daraja config:', err);
+  }
+  return { ...defaultDarajaConfig };
+}
+
+let currentDarajaConfig: DarajaConfig = loadPersistedDarajaConfig();
+
+function savePersistedDarajaConfig(cfg: DarajaConfig) {
+  try {
+    fs.mkdirSync(path.dirname(DARAJA_CONFIG_FILE), { recursive: true });
+    fs.writeFileSync(DARAJA_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to persist Daraja config:', err);
+  }
+}
 
 // Real Safaricom Daraja STK Push Dispatcher
 async function initiateRealDarajaStkPush(params: {
@@ -561,7 +585,18 @@ async function initiateRealDarajaStkPush(params: {
       body: JSON.stringify(stkPayload)
     });
 
-    const stkData: any = await stkRes.json();
+    const rawText = await stkRes.text();
+    let stkData: any = {};
+    try {
+      stkData = JSON.parse(rawText);
+    } catch {
+      console.error('[Daraja Raw STK Response]:', rawText.substring(0, 300));
+      return {
+        success: false,
+        configured: true,
+        error: 'Safaricom Daraja Gateway network response could not be parsed. Please check if this Till requires Live Production environment.'
+      };
+    }
     console.log('[Daraja STK Response]:', stkData);
 
     if (stkData.ResponseCode === '0') {
@@ -605,7 +640,11 @@ app.post('/api/mpesa/stkpush', async (req: Request, res: Response) => {
 
   const appHost = req.get('host') || 'localhost:3000';
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
-  const callbackUrl = `${protocol}://${appHost}/api/mpesa/callback`;
+  let callbackUrl = `${protocol}://${appHost}/api/mpesa/callback`;
+  if (!callbackUrl.startsWith('https://') || appHost.includes('localhost') || appHost.includes('127.0.0.1')) {
+    const publicDomain = process.env.PUBLIC_URL || 'https://ais-dev-xsf4pdlyxsql4ifov55zum-390800191767.europe-west2.run.app';
+    callbackUrl = `${publicDomain.replace(/\/$/, '')}/api/mpesa/callback`;
+  }
 
   // Attempt real Safaricom Daraja STK Push if configured
   if (currentDarajaConfig.consumerKey.trim() && currentDarajaConfig.consumerSecret.trim()) {
@@ -790,6 +829,7 @@ app.get('/api/mpesa/config', (req: Request, res: Response) => {
     shortCode: currentDarajaConfig.shortCode,
     tillNumber: currentDarajaConfig.tillNumber,
     merchantName: currentDarajaConfig.merchantName,
+    consumerKey: currentDarajaConfig.consumerKey,
     hasConsumerKey: Boolean(currentDarajaConfig.consumerKey),
     hasConsumerSecret: Boolean(currentDarajaConfig.consumerSecret),
     hasPasskey: Boolean(currentDarajaConfig.passkey)
@@ -813,6 +853,8 @@ app.post('/api/mpesa/config', (req: Request, res: Response) => {
     hasConsumerKey: Boolean(currentDarajaConfig.consumerKey),
     hasPasskey: Boolean(currentDarajaConfig.passkey)
   });
+
+  savePersistedDarajaConfig(currentDarajaConfig);
 
   res.json({
     success: true,

@@ -10,7 +10,14 @@ import {
   AlertCircle,
   FileCheck,
   Radio,
-  Loader2
+  Loader2,
+  Settings,
+  KeyRound,
+  Lock,
+  ExternalLink,
+  Sparkles,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { triggerConfetti } from '../utils/confetti';
 import { safeCopyText } from '../utils/storage';
@@ -58,6 +65,17 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
   const [countdown, setCountdown] = useState(60);
   const [copiedTill, setCopiedTill] = useState(false);
 
+  // Daraja Gateway Configuration State
+  const [darajaConfig, setDarajaConfig] = useState<any>(null);
+  const [showDarajaSetup, setShowDarajaSetup] = useState(false);
+  const [consumerKey, setConsumerKey] = useState('');
+  const [consumerSecret, setConsumerSecret] = useState('');
+  const [passkey, setPasskey] = useState('');
+  const [darajaEnv, setDarajaEnv] = useState<'sandbox' | 'production'>('production');
+  const [shortCode, setShortCode] = useState('1722023');
+  const [isSavingDaraja, setIsSavingDaraja] = useState(false);
+  const [darajaSaveMsg, setDarajaSaveMsg] = useState('');
+
   // Manual Receipt Verification State
   const [manualReceiptInput, setManualReceiptInput] = useState('');
   const [manualAmount, setManualAmount] = useState<number>(10000);
@@ -65,6 +83,23 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
   const [isVerifyingManual, setIsVerifyingManual] = useState(false);
 
   const pollTimerRef = useRef<any>(null);
+
+  // Refresh Daraja configuration status
+  const refreshDarajaConfig = async () => {
+    try {
+      const cfg = await api.getDarajaConfig();
+      setDarajaConfig(cfg);
+      if (cfg) {
+        setDarajaEnv(cfg.environment || 'production');
+        setShortCode(cfg.shortCode || '1722023');
+        if (cfg.consumerKey) setConsumerKey(cfg.consumerKey);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    refreshDarajaConfig();
+  }, [isOpen]);
 
   // Countdown timer when waiting for user to enter PIN on their mobile phone
   useEffect(() => {
@@ -152,13 +187,54 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
       } else {
         setErrorMessage(
           res?.error || 
-          'Safaricom Daraja API credentials are not yet configured on the server. Please configure keys in Admin Settings, or use Buy Goods Till 1722023 directly.'
+          'Safaricom Daraja API credentials are not yet configured on the server. Please enter your Daraja Consumer Key & Secret below, or use Buy Goods Till 1722023 directly.'
         );
+        setShowDarajaSetup(true);
       }
     } catch (err: any) {
       setIsProcessing(false);
       setErrorMessage(err?.message || 'Network error connecting to Safaricom STK Gateway.');
     }
+  };
+
+  // Save Daraja Credentials
+  const handleSaveDarajaCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingDaraja(true);
+    setDarajaSaveMsg('');
+
+    try {
+      const res = await api.saveDarajaConfig({
+        consumerKey,
+        consumerSecret,
+        passkey,
+        shortCode,
+        tillNumber: shortCode,
+        environment: darajaEnv
+      });
+
+      setIsSavingDaraja(false);
+      if (res.success) {
+        setDarajaSaveMsg('✓ Safaricom Daraja API credentials saved and active.');
+        setErrorMessage('');
+        await refreshDarajaConfig();
+        setTimeout(() => {
+          setShowDarajaSetup(false);
+          setDarajaSaveMsg('');
+        }, 1500);
+      } else {
+        setDarajaSaveMsg(res.error || 'Failed to save configuration');
+      }
+    } catch (err: any) {
+      setIsSavingDaraja(false);
+      setDarajaSaveMsg(err?.message || 'Error saving configuration');
+    }
+  };
+
+  const handleFillSandboxPreset = () => {
+    setDarajaEnv('sandbox');
+    setShortCode('174379');
+    setPasskey('bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919');
   };
 
   // 2. Verify Manual Buy Goods Till 1722023 Payment Code
@@ -242,6 +318,8 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
     setStkStatus('idle');
     onClose();
   };
+
+  const isConfigured = Boolean(darajaConfig?.hasConsumerKey && darajaConfig?.hasConsumerSecret && darajaConfig?.hasPasskey);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto p-3 sm:p-4 md:p-6 flex items-center justify-center bg-black/90 backdrop-blur-md">
@@ -449,10 +527,34 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
               </button>
             </div>
 
+            {/* Error Message with Quick Action */}
             {errorMessage && (
-              <div className="p-3 bg-rose-950/80 border border-rose-500/40 text-rose-300 rounded-none flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{errorMessage}</span>
+              <div className="p-3 bg-rose-950/80 border border-rose-500/40 text-rose-200 rounded-none space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <span className="leading-snug">{errorMessage}</span>
+                </div>
+                {!isConfigured && (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowDarajaSetup(true)}
+                      className="bg-amber-500 hover:bg-amber-400 text-black font-black px-2.5 py-1 text-[10px] uppercase tracking-wider cursor-pointer"
+                    >
+                      ⚙️ Configure Daraja Keys Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDepositTab('manual');
+                        setErrorMessage('');
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-2.5 py-1 text-[10px] uppercase tracking-wider cursor-pointer"
+                    >
+                      🧾 Pay via Till 1722023 Directly
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -485,6 +587,136 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                     <FileCheck className="w-3.5 h-3.5" />
                     <span>Verify Till 1722023 Code</span>
                   </button>
+                </div>
+
+                {/* DARAJA STATUS & CONFIGURATION DRAWER (DIRECT ACCESS) */}
+                <div className={`p-3 border rounded-none transition-all ${
+                  isConfigured 
+                    ? 'bg-[#060D09] border-emerald-500/40 text-slate-300' 
+                    : 'bg-[#120B04] border-amber-500/40 text-amber-200'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${isConfigured ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                      <span className="font-bold text-[11px]">
+                        {isConfigured 
+                          ? `Safaricom Daraja API: CONNECTED (${darajaConfig?.environment?.toUpperCase() || 'LIVE'})`
+                          : 'Safaricom Daraja API: Not Yet Configured'
+                        }
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowDarajaSetup(!showDarajaSetup)}
+                      className="text-[10px] font-mono text-amber-400 hover:text-amber-300 underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <Settings className="w-3 h-3" />
+                      <span>{showDarajaSetup ? 'Hide Setup' : isConfigured ? 'Edit Keys' : 'Configure Keys'}</span>
+                      {showDarajaSetup ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                  </div>
+
+                  {/* EXPANDABLE DARAJA SETUP PANEL */}
+                  {showDarajaSetup && (
+                    <form onSubmit={handleSaveDarajaCredentials} className="mt-3 pt-3 border-t border-slate-800 space-y-2.5 animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-white flex items-center gap-1">
+                          <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Daraja Developer API Credentials:</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleFillSandboxPreset}
+                          className="text-[10px] text-emerald-400 hover:underline cursor-pointer flex items-center gap-1"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          <span>Fill Sandbox Preset</span>
+                        </button>
+                      </div>
+
+                      {darajaSaveMsg && (
+                        <div className={`p-2 rounded text-[11px] font-mono ${
+                          darajaSaveMsg.includes('✓') ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                        }`}>
+                          {darajaSaveMsg}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Environment</label>
+                          <select
+                            value={darajaEnv}
+                            onChange={(e) => setDarajaEnv(e.target.value as any)}
+                            className="w-full px-2 py-1.5 bg-black border border-slate-700 text-white font-mono text-[11px]"
+                          >
+                            <option value="production">Production (Live Safaricom)</option>
+                            <option value="sandbox">Sandbox (Testing)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">ShortCode / Till</label>
+                          <input
+                            type="text"
+                            value={shortCode}
+                            onChange={(e) => setShortCode(e.target.value)}
+                            placeholder="1722023"
+                            className="w-full px-2 py-1.5 bg-black border border-slate-700 text-white font-mono text-[11px]"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Consumer Key</label>
+                        <input
+                          type="text"
+                          value={consumerKey}
+                          onChange={(e) => setConsumerKey(e.target.value)}
+                          placeholder="Paste Consumer Key from developer.safaricom.co.ke"
+                          className="w-full px-2 py-1.5 bg-black border border-slate-700 text-white font-mono text-[11px]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Consumer Secret</label>
+                        <input
+                          type="password"
+                          value={consumerSecret}
+                          onChange={(e) => setConsumerSecret(e.target.value)}
+                          placeholder="Paste Consumer Secret"
+                          className="w-full px-2 py-1.5 bg-black border border-slate-700 text-white font-mono text-[11px]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Online Passkey</label>
+                        <input
+                          type="password"
+                          value={passkey}
+                          onChange={(e) => setPasskey(e.target.value)}
+                          placeholder="Paste Lipa Na M-PESA Online Passkey"
+                          className="w-full px-2 py-1.5 bg-black border border-slate-700 text-white font-mono text-[11px]"
+                        />
+                      </div>
+
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          type="submit"
+                          disabled={isSavingDaraja}
+                          className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-black uppercase tracking-wider text-[11px] cursor-pointer"
+                        >
+                          {isSavingDaraja ? 'Saving...' : 'Save & Connect Daraja'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowDarajaSetup(false)}
+                          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] cursor-pointer"
+                        >
+                          Close
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
 
                 {/* Official Lipa Na M-PESA Buy Goods Till Information Box */}
@@ -585,6 +817,19 @@ export const MpesaModal: React.FC<MpesaModalProps> = ({
                         </span>
                       </button>
                     </div>
+
+                    {!isConfigured && (
+                      <div className="p-2.5 bg-black/60 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                        <span>No API credentials? Use Till 1722023 directly:</span>
+                        <button
+                          type="button"
+                          onClick={() => setDepositTab('manual')}
+                          className="text-amber-400 hover:underline font-bold"
+                        >
+                          Switch to Manual Verify &rarr;
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
